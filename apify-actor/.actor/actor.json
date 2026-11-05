@@ -1,0 +1,9 @@
+{
+  "actorSpecification": 1,
+  "name": "recta-cross-chain-preflight",
+  "title": "Recta: cross-chain transfer preflight for AI agents",
+  "description": "Check whether Recta covers a cross-chain stablecoin or BTC transfer and which bridges it compares. Free. A signed quote (cheaper route or free) is then requested from Recta directly with your own wallet.",
+  "version": "0.1",
+  "input": "./input_schema.json",
+  "dockerfile": "../Dockerfile"
+}

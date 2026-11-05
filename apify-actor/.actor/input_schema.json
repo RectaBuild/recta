@@ -1,0 +1,13 @@
+{
+  "title": "Corridor",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "source_network": { "title": "Source network", "type": "string", "editor": "textfield", "default": "ethereum", "description": "Lowercase network name, e.g. ethereum, arbitrum, base, bnb_chain, solana_mainnet." },
+    "source_asset": { "title": "Source asset", "type": "string", "editor": "textfield", "default": "USDC", "description": "Uppercase asset, e.g. USDC, USDT, USDG." },
+    "destination_network": { "title": "Destination network", "type": "string", "editor": "textfield", "default": "arbitrum" },
+    "destination_asset": { "title": "Destination asset", "type": "string", "editor": "textfield", "default": "USDC" },
+    "include_wallet_policy": { "title": "Include wallet allowlist", "type": "boolean", "default": false, "description": "Also return the networks, exact-amount approvals, contracts and fee recipient to allow in an agent wallet's policy." }
+  },
+  "required": ["source_network", "source_asset", "destination_network", "destination_asset"]
+}

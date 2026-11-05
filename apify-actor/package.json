@@ -1,0 +1,1 @@
+{ "name": "recta-cross-chain-preflight", "version": "0.1.0", "type": "module", "main": "src/main.js", "dependencies": { "apify": "3.2.6" }, "scripts": { "start": "node src/main.js" } }
