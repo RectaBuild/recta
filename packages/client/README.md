@@ -1,0 +1,109 @@
+# @recta/client
+
+A client for [Recta](https://api.recta.build/llms.txt): before your agent moves stablecoins between blockchains, Recta
+finds a cheaper route it can prove against the route you would use anyway, and charges exactly 5 % of the saving it
+verifies on chain after you execute. No saving, no charge.
+
+This package runs Recta's four steps with the wallet your agent already has:
+
+```
+evaluate → authorizeFee → execute → report
+```
+
+It never receives a key. Before it signs or sends anything it checks it locally, and those checks cannot be turned off.
+
+## Install
+
+```
+npm install @recta/client viem
+```
+
+`viem` (>= 2.30, < 3) is the only dependency, and you choose its version.
+
+## Use
+
+```ts
+import { createRectaClient, viemSigner, viemChainReader } from "@recta/client";
+
+const recta = createRectaClient({
+  signer: viemSigner({ account, walletClientFor: (chainId) => walletClients[chainId] }),
+  chain: viemChainReader((chainId) => publicClients[chainId]),
+  limits: {
+    maxPermitUsdcAtomic: 5_000_000n, // never authorize more than 5 USDC in one fee permit
+    maxNativeValueWei: 10n ** 15n,   // never attach more than 0.001 native to one route transaction
+    minOutputBps: 9900,              // required, 1–10000: the route must guarantee the recipient at least 99 % of the amount sent
+  },
+});
+
+// Dry run: evaluates and checks, signs no permit, sends no transaction.
+const preview = await recta.run(request, { dryRun: true });
+
+// The whole flow.
+const result = await recta.run(request);
+```
+
+`request` is Recta's evaluation request (schema in the
+[service descriptor](https://api.recta.build/v1/golden-corridor/commercial-evaluations/schema)); its `sender` must be
+your signer's address. Each step is also available alone: `evaluate`, `authorizeFee`, `check`, `execute`, `report`,
+`ledger`, `payDebt`.
+
+Your account must be an EOA: Recta's signed requests are EIP-191 signatures recovered to the sender's address.
+
+The saving is measured against `baseline_provider`: the route your agent would use without Recta. Declare the one it
+really uses. If that route is already the cheapest, Recta answers with no saving and charges nothing.
+
+## What is checked before signing
+
+**Pins.** The package carries Recta's fee addresses in its own code: Permit2, x402's `upto` proxy, USDC on Base,
+Recta's fee recipient and Recta's facilitator. Recta's wallet policy is read live and must agree with them; if it does
+not, nothing is signed.
+
+**The fee permit** (Permit2 `PermitWitnessTransferFrom` on Base) is signed only if the domain is Permit2 on Base, the
+types are exactly Recta's, the spender is the `upto` proxy, the token is USDC, `witness.to` is Recta's recipient,
+`witness.facilitator` is Recta's sender, the amount is the decision's cap plus what it carries from earlier unpaid fees
+and is within `maxPermitUsdcAtomic`, and the deadline is in the future and no later than the commercial expiry plus 37
+days. The typed data signed is rebuilt from those checked fields, not taken as the server sent it. Recta settles exactly
+5 % of the verified saving, never more than the permit.
+
+**The fee permit is signed before the route can be reviewed.** Recta hands out a decision's transactions only once its
+fee authorization is stored, so the permit comes first. Its ceiling (`max_fee_authorization` plus earlier unpaid fees,
+never more than `maxPermitUsdcAtomic`) is the most you can owe for a decision; Recta still settles only 5 % of a saving
+it verifies on chain, so a route you refuse below and never execute owes nothing.
+
+**Every route transaction** is checked against a route table pinned in this package, generated from Recta's own server
+configuration: for each EVM corridor, the source and destination tokens and the only contracts a route may approve
+and call, with the destination each call must name. The wallet policy Recta serves never adds to it. A transaction is
+sent only if: it is EIP-1559 with an empty access list, on the source chain, from your signer, within your request's
+gas price ceilings; an approval is `approve` of the pinned source token, for exactly the transfer amount, to the pinned
+contract the execution then calls; the execution decodes as that contract's own call (Across `deposit`, CCTP V2
+`depositForBurn` or LayerZero OFT/Stargate `send`) naming your sender, your recipient, the source token and the exact
+amount, the pinned destination (Across chain id and output token, with no message; CCTP domain, completable by
+anyone; LayerZero endpoint id, with no executor options, compose message or OFT command), and a guaranteed output of at least `minOutputBps` of the
+amount (Across `outputAmount`, CCTP amount minus `maxFee`, LayerZero `minAmountLD`); native value is allowed only as
+the declared messaging fee, within `maxNativeValueWei`.
+
+`report` returns `stage`: `ACCRUED` (Recta verified and recorded the saving), `PENDING` (report again later) or
+`REFUSED` (Recta will not accrue this execution; see `body.reason_code`).
+
+**Debts.** If Recta refuses a new evaluation because an earlier fee could not be collected, `evaluate` throws
+`RectaDebtError` with the offer. The package never signs a debt by itself: call `payDebt(offer)` if you agree (same
+checks, exact amount).
+
+## Limits of this version
+
+- EVM sources and EVM recipients only. Solana, Tron and Bitcoin routes, Relay and deBridge are refused.
+- A corridor or contract Recta adds after this release is refused until a new release pins it.
+- Smart accounts (EIP-1271) cannot sign Recta's requests.
+
+## Provenance
+
+Every release is published from [RectaBuild/recta](https://github.com/RectaBuild/recta) by GitHub Actions with npm
+provenance and no long-lived token. Check it before you trust a version:
+
+```
+npm audit signatures
+```
+
+## License
+
+MIT
