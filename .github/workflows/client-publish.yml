@@ -1,0 +1,38 @@
+name: Publish client package
+
+# Publishes packages/client to npm when a release tag client-v<version> is pushed. npm Trusted Publishing: no token is
+# stored anywhere; GitHub's OIDC identity of this workflow is the only credential, and npm records the provenance.
+# Actions are pinned by commit SHA because this job can mint a publishing identity. Before the first publish: the npm
+# environment needs a required reviewer (the owner), client-v* tags need a protection rule, and the npm trusted
+# publisher must name RectaBuild/recta, client-publish.yml and the npm environment.
+on:
+  push:
+    tags: ["client-v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    defaults:
+      run:
+        working-directory: packages/client
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: npm with Trusted Publishing (>= 11.5.1)
+        run: npm install -g npm@11.21.1 && npm --version
+      - name: Tag matches the package version
+        run: test "client-v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - name: Build
+        run: |
+          npm install --no-save --ignore-scripts "viem@2.56.3" "typescript@5.9.3"
+          npx tsc -p tsconfig.build.json
+      - name: Publish with provenance
+        run: npm publish --provenance --access public

@@ -1,0 +1,54 @@
+{
+  "name": "@recta/client",
+  "version": "0.1.0",
+  "description": "Client for Recta (api.recta.build): evaluate a cross-chain stablecoin transfer, authorize Recta's 5 %-of-verified-saving fee, execute the committed route and report it, with local checks before every signature.",
+  "license": "MIT",
+  "author": "Recta (https://recta.build)",
+  "homepage": "https://github.com/RectaBuild/recta/tree/main/packages/client#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RectaBuild/recta.git",
+    "directory": "packages/client"
+  },
+  "bugs": {
+    "url": "https://github.com/RectaBuild/recta/issues"
+  },
+  "keywords": [
+    "recta",
+    "ai-agent",
+    "cross-chain",
+    "bridge",
+    "stablecoin",
+    "usdc",
+    "x402",
+    "viem"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "peerDependencies": {
+    "viem": ">=2.56.3 <3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
