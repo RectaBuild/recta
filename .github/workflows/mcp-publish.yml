@@ -1,0 +1,55 @@
+name: Publish MCP package
+
+# Publishes packages/mcp to npm when a release tag mcp-v<version> is pushed. npm Trusted Publishing: no token is
+# stored anywhere; GitHub's OIDC identity of this workflow is the only credential, and npm records the provenance.
+# Actions are pinned by commit SHA because this job can mint a publishing identity. Before the first publish: the npm
+# environment needs a required reviewer (the owner), mcp-v* tags need a protection rule, and the npm trusted
+# publisher must name RectaBuild/recta, mcp-publish.yml and the npm environment.
+# First publish only: npm can attach a trusted publisher only to a package that already exists. For that one release the
+# owner stores a short-lived npm token as the `NPM_FIRST_PUBLISH_TOKEN` secret of the npm environment, then deletes it
+# and adds the trusted publisher; every later release uses the OIDC identity alone. Provenance is recorded either way.
+on:
+  push:
+    tags: ["mcp-v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    defaults:
+      run:
+        working-directory: packages/mcp
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: npm with Trusted Publishing (>= 11.5.1)
+        run: npm install -g npm@11.21.1 && npm --version
+      - name: Tag matches the package version
+        run: test "mcp-v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - name: Build
+        run: |
+          # @recta/client must already be published at the exact version package.json names.
+          npm install --ignore-scripts --no-package-lock
+          npx tsc -p tsconfig.build.json
+      - name: Publish with provenance
+        env:
+          FIRST_PUBLISH_TOKEN: ${{ secrets.NPM_FIRST_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${FIRST_PUBLISH_TOKEN}" ]; then
+            # The token is only for a package's first release: once it exists, refuse to keep using it.
+            if npm view "$(node -p "require('./package.json').name")" name >/dev/null 2>&1; then
+              echo "The package already exists: delete NPM_FIRST_PUBLISH_TOKEN and use the trusted publisher"
+              exit 1
+            fi
+            echo "First publish: using the temporary token (delete it after this release)"
+            printf '//registry.npmjs.org/:_authToken=%s\n' "${FIRST_PUBLISH_TOKEN}" > "${RUNNER_TEMP}/.npmrc"
+            export NPM_CONFIG_USERCONFIG="${RUNNER_TEMP}/.npmrc"
+          fi
+          npm publish --provenance --access public

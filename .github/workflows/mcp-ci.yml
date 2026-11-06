@@ -1,0 +1,42 @@
+name: MCP package CI
+
+on:
+  pull_request:
+    paths: ["packages/mcp/**", "packages/client/**", ".github/workflows/mcp-*.yml"]
+  push:
+    branches: [main]
+    paths: ["packages/mcp/**", "packages/client/**", ".github/workflows/mcp-*.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Build against the client in this repository
+        run: |
+          set -euo pipefail
+          cd packages/client
+          npm install --no-save --ignore-scripts "viem@2.56.3" "typescript@5.9.3"
+          npx tsc -p tsconfig.build.json
+          npm pack
+          cd ../mcp
+          npm install --no-save --no-package-lock --ignore-scripts ../client/recta-client-*.tgz viem@2.56.3 typescript@5.9.3 @types/node@22.20.2
+          npx tsc -p tsconfig.build.json
+      - name: The server answers initialize and tools/list over stdio
+        working-directory: packages/mcp
+        run: |
+          set -euo pipefail
+          out=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | RECTA_PRIVATE_KEY=0x1111111111111111111111111111111111111111111111111111111111111111 node dist/cli.js)
+          echo "$out"
+          echo "$out" | grep -q '"protocolVersion":"2025-06-18"'
+          echo "$out" | grep -q '"recta_evaluate"'
+          if echo "$out" | grep -q '"recta_execute"'; then echo "execution tools listed without RECTA_ALLOW_EXECUTE"; exit 1; fi
+      - name: Package contents
+        working-directory: packages/mcp
+        run: npm pack --dry-run

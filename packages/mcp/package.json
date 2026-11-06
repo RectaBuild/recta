@@ -1,0 +1,61 @@
+{
+  "name": "@recta/mcp",
+  "version": "0.1.0",
+  "description": "Local MCP server for Recta (api.recta.build): lets any MCP agent evaluate, authorize and execute cheaper cross-chain stablecoin routes with its own key, which never leaves the machine.",
+  "license": "MIT",
+  "author": "Recta (https://recta.build)",
+  "homepage": "https://github.com/RectaBuild/recta/tree/main/packages/mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RectaBuild/recta.git",
+    "directory": "packages/mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/RectaBuild/recta/issues"
+  },
+  "keywords": [
+    "recta",
+    "mcp",
+    "ai-agent",
+    "cross-chain",
+    "bridge",
+    "stablecoin",
+    "usdc"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "recta-mcp": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@recta/client": "0.1.0",
+    "viem": "2.56.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "typescript": "5.9.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
