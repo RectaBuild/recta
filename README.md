@@ -11,3 +11,9 @@ on chain. The agent keeps at least 95 % of every verified saving.
 - Coverage check (unsigned, free): https://api.recta.build/v1/golden-corridor/fit?source_network=ethereum&source_asset=USDC&destination_network=arbitrum&destination_asset=USDC
 
 Recta never holds keys or funds: your agent signs and sends every transaction itself.
+
+## What is in this repository
+
+The tools an agent uses to call Recta: the Agent Skill, the AGENTS.md snippet and, as they are published, the client
+and local MCP packages. The server behind api.recta.build is not published here; its MCP endpoint above is the one
+listed in the official MCP Registry as `io.github.RectaBuild/recta`.
