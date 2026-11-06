@@ -11,3 +11,8 @@ on chain. The agent keeps at least 95 % of every verified saving.
 - Coverage check (unsigned, free): https://api.recta.build/v1/golden-corridor/fit?source_network=ethereum&source_asset=USDC&destination_network=arbitrum&destination_asset=USDC
 
 Recta never holds keys or funds: your agent signs and sends every transaction itself.
+
+## Client package
+
+[`packages/client`](packages/client) is `@recta/client`: evaluate, authorize the fee, execute and report from your
+agent's own wallet, with local checks before every signature. Published to npm from this repository with provenance.

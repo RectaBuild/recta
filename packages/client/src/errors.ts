@@ -1,0 +1,27 @@
+/** A local check refused to sign or send: nothing was signed or sent. `check` names the check. */
+export class RectaCheckError extends Error {
+  override readonly name: string = "RectaCheckError";
+  constructor(readonly check: string, message: string) {
+    super(`${check}: ${message}`);
+  }
+}
+
+/** Recta answered with an error. `body` is Recta's JSON answer when it sent one. */
+export class RectaHttpError extends Error {
+  override readonly name: string = "RectaHttpError";
+  readonly reasonCode: string | undefined;
+  constructor(readonly status: number, readonly body: unknown) {
+    const reason = typeof body === "object" && body !== null && typeof (body as Record<string, unknown>)["reason_code"] === "string" ? (body as Record<string, string>)["reason_code"] : undefined;
+    super(`Recta answered HTTP ${status}${reason === undefined ? "" : ` (${reason})`}`);
+    this.reasonCode = reason;
+  }
+}
+
+/** A new evaluation was refused because the sender owes a fee: `offer` is the debt permit Recta offers (or null while
+ *  a pull is pending). Pay it with `payDebt(offer)` only if you agree; this package never signs a debt by itself. */
+export class RectaDebtError extends RectaHttpError {
+  override readonly name: string = "RectaDebtError";
+  constructor(body: unknown, readonly offer: unknown) {
+    super(402, body);
+  }
+}

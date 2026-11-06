@@ -1,0 +1,33 @@
+name: Publish client package
+
+# Publishes packages/client to npm when a release tag client-v<version> is pushed. npm Trusted Publishing: no token is
+# stored anywhere; GitHub's OIDC identity of this workflow is the only credential, and npm records the provenance.
+on:
+  push:
+    tags: ["client-v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    defaults:
+      run:
+        working-directory: packages/client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Tag matches the package version
+        run: test "client-v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - name: Build
+        run: |
+          npm install --no-save --ignore-scripts "viem@2.56.3" "typescript@5.9.3"
+          npx tsc -p tsconfig.build.json
+      - name: Publish with provenance
+        run: npm publish --provenance --access public

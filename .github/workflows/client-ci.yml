@@ -1,0 +1,34 @@
+name: Client package CI
+
+on:
+  pull_request:
+    paths: ["packages/client/**", ".github/workflows/client-*.yml"]
+  push:
+    branches: [main]
+    paths: ["packages/client/**", ".github/workflows/client-*.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build against the lowest and the latest viem in range
+        run: |
+          set -euo pipefail
+          for v in 2.56.3 "<3"; do
+            rm -rf node_modules dist
+            npm install --no-save --ignore-scripts "viem@$v" "typescript@5.9.3"
+            npx tsc -p tsconfig.build.json
+            node -e "import('./dist/index.js').then((m) => { if (typeof m.createRectaClient !== 'function') process.exit(1); console.log('viem', '$v', Object.keys(m).length, 'exports'); })"
+          done
+      - name: Package contents
+        run: npm pack --dry-run
