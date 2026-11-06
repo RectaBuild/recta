@@ -43,6 +43,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${FIRST_PUBLISH_TOKEN}" ]; then
+            # The token is only for a package's first release: once it exists, refuse to keep using it.
+            if npm view "$(node -p "require('./package.json').name")" name >/dev/null 2>&1; then
+              echo "The package already exists: delete NPM_FIRST_PUBLISH_TOKEN and use the trusted publisher"
+              exit 1
+            fi
             echo "First publish: using the temporary token (delete it after this release)"
             printf '//registry.npmjs.org/:_authToken=%s\n' "${FIRST_PUBLISH_TOKEN}" > "${RUNNER_TEMP}/.npmrc"
             export NPM_CONFIG_USERCONFIG="${RUNNER_TEMP}/.npmrc"
