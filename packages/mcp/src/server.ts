@@ -6,7 +6,7 @@ import { createRectaClient, RectaCheckError, RectaDebtError, RectaHttpError, pin
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.0" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.1" } as const;
 
 export interface LocalServerOptions {
   readonly signer: RectaSigner;
