@@ -1,0 +1,81 @@
+# @recta/mcp
+
+A local [MCP](https://modelcontextprotocol.io) server for [Recta](https://api.recta.build/llms.txt). It lets an MCP
+agent (Claude, Cursor, or any other client) do this before it moves stablecoins between blockchains, with no code
+written: ask Recta for a cheaper route than the one it would use anyway, check that route, and send it from its own
+wallet. Recta charges exactly 5 % of the saving it verifies on chain after execution. No saving, no charge.
+
+The key stays on your machine. The server is a thin layer over [`@recta/client`](../client): every local check of the
+client runs before anything is signed or sent, and those checks cannot be turned off.
+
+## Run
+
+```
+npx -y @recta/mcp
+```
+
+Example for an MCP client configuration file (Claude Desktop, Cursor and others use this shape):
+
+```json
+{
+  "mcpServers": {
+    "recta": {
+      "command": "npx",
+      "args": ["-y", "@recta/mcp"],
+      "env": {
+        "RECTA_PRIVATE_KEY": "0x…",
+        "RECTA_RPC_8453": "https://…",
+        "RECTA_RPC_42161": "https://…"
+      }
+    }
+  }
+}
+```
+
+Use a **dedicated wallet** that holds only what the agent may move, never your main one. The key sits in plain text in
+that configuration file (and in the environment of the server process), so anyone who can read the file can move the
+wallet's funds.
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RECTA_PRIVATE_KEY` | required | The agent wallet's private key (EOA). It is only used locally, to sign. |
+| `RECTA_RPC_<chainId>` | the chain's public RPC | An `https` RPC URL for that chain, e.g. `RECTA_RPC_8453` for Base. `http` is accepted only for `localhost`; any other value stops the server. |
+| `RECTA_ALLOW_EXECUTE` | off | Set to `yes` to let the agent sign fee permits and send transactions. Anything else keeps the server read and preview only. |
+| `RECTA_MAX_FEE_USDC` | `1` | The most one fee permit may authorize, in USDC. A larger permit is refused. |
+| `RECTA_MAX_NATIVE_WEI` | `0` | The most native value one route transaction may carry (messaging fees). `0` refuses routes that need one. |
+| `RECTA_MAX_FEE_GWEI` | `50` | The highest source-chain `maxFeePerGas` an evaluation may commit to, whatever the RPC estimates. |
+| `RECTA_MAX_PRIORITY_FEE_GWEI` | `2` | The highest priority fee an evaluation may commit to. |
+| `RECTA_MIN_OUTPUT_BPS` | `9900` | The route must guarantee the recipient at least this share of the amount sent, in basis points (1–10000). |
+
+## Tools
+
+| Tool | Signs or sends | What it does |
+| --- | --- | --- |
+| `recta_fit` | nothing | Does Recta cover this corridor, and which contracts would a route touch? |
+| `recta_evaluate` | a request signature | Asks Recta whether a cheaper route than `baseline_provider` can be proven. Free. |
+| `recta_preview` | a request signature | Shows the fee ceiling Recta asks you to authorize, after the local permit check. |
+| `recta_execute` | fee permit, transactions | Signs the checked permit, sends the checked transactions, reports them. Only with `RECTA_ALLOW_EXECUTE=yes`. |
+| `recta_report` | a request signature | Reports an executed route again (after `PENDING`). |
+| `recta_pay_debt` | a debt permit | Pays an earlier fee Recta could not collect. Only with `RECTA_ALLOW_EXECUTE=yes`. |
+| `recta_ledger` | a request signature | The wallet's Recta fees and whether each was collected. |
+
+`recta_execute` and `recta_pay_debt` are not even listed to the agent unless execution is enabled.
+
+The saving is measured against `baseline_provider`: the route your agent would use without Recta. Declare the one it
+really uses. If that route is already the cheapest, Recta answers with no saving and charges nothing; keep your route.
+
+## Limits of this version
+
+- The server sends only source-chain transactions, so it always asks Recta for routes that need no destination
+  transaction from you (`destination_execution: NONE`). Routes that need you to complete a mint on the destination
+  chain are not offered.
+- The same limits as `@recta/client`: EVM sources and recipients only, EOA wallets only (no smart accounts), and only
+  the corridors and contracts pinned in the release.
+- Gas price ceilings are set to twice the source chain's current estimate when the agent evaluates, never above
+  `RECTA_MAX_FEE_GWEI` and `RECTA_MAX_PRIORITY_FEE_GWEI`.
+
+## License
+
+MIT

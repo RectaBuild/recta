@@ -49,6 +49,34 @@ your signer's address. Each step is also available alone: `evaluate`, `authorize
 
 Your account must be an EOA: Recta's signed requests are EIP-191 signatures recovered to the sender's address.
 
+### Coinbase CDP accounts
+
+A [Coinbase CDP](https://docs.cdp.coinbase.com) EVM server account (an EOA whose key stays in CDP) works through
+`cdpSigner`. This package does not depend on the CDP SDK:
+
+```ts
+import { CdpClient } from "@coinbase/cdp-sdk";
+import { createRectaClient, cdpSigner, viemChainReader } from "@recta/client";
+
+const cdp = new CdpClient();
+const account = await cdp.evm.getOrCreateAccount({ name: "my-agent" });
+
+const recta = createRectaClient({
+  signer: cdpSigner({ account }),
+  chain: viemChainReader((chainId) => publicClients[chainId]),
+  limits: { maxPermitUsdcAtomic: 5_000_000n, maxNativeValueWei: 10n ** 15n, minOutputBps: 9900 },
+});
+```
+
+CDP signs Recta's requests and the fee permit. On Ethereum, Base, Arbitrum, Optimism, Polygon and Avalanche, CDP also
+sends each route transaction once this package has checked it. On any other chain, pass `walletClientFor` as well:
+CDP then signs the transaction and your RPC sends it.
+
+To limit the account to Recta's contracts at CDP's side too, apply the
+[CDP Policy Engine policy Recta serves](https://api.recta.build/v1/golden-corridor/wallet-policy/cdp). CDP refuses
+anything that policy does not allow, and it allows sending only on those six chains: with the policy applied, a route
+on any other chain is refused by CDP unless you add your own rule for it.
+
 The saving is measured against `baseline_provider`: the route your agent would use without Recta. Declare the one it
 really uses. If that route is already the cheapest, Recta answers with no saving and charges nothing.
 

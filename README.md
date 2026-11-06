@@ -17,6 +17,11 @@ Recta never holds keys or funds: your agent signs and sends every transaction it
 [`packages/client`](packages/client) is `@recta/client`: evaluate, authorize the fee, execute and report from your
 agent's own wallet, with local checks before every signature. Published to npm from this repository with provenance.
 
+## Local MCP server
+
+[`packages/mcp`](packages/mcp) is `@recta/mcp`: a local MCP server over the client, so Claude, Cursor or any MCP agent
+runs the same flow with its own key, which stays on the machine. Execution is off until the operator turns it on.
+
 ## What is in this repository
 
 The tools an agent uses to call Recta: the Agent Skill, the AGENTS.md snippet and, as they are published, the client
