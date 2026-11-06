@@ -16,3 +16,9 @@ Recta never holds keys or funds: your agent signs and sends every transaction it
 
 [`packages/client`](packages/client) is `@recta/client`: evaluate, authorize the fee, execute and report from your
 agent's own wallet, with local checks before every signature. Published to npm from this repository with provenance.
+
+## What is in this repository
+
+The tools an agent uses to call Recta: the Agent Skill, the AGENTS.md snippet and, as they are published, the client
+and local MCP packages. The server behind api.recta.build is not published here; its MCP endpoint above is the one
+listed in the official MCP Registry as `io.github.RectaBuild/recta`.
