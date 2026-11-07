@@ -83,19 +83,16 @@ test("AgentKit: a route from another chain is refused before any request", async
   assert.equal(calls.length, 0);
 });
 
-test("AgentKit: execution tools only when enabled, and never from a smart account", async () => {
+test("AgentKit: never sends, even when asked to execute (its wallet providers rewrite gas and fees, Fable A-1)", async () => {
   const { f } = fakeFetch();
-  const names = rectaActionProvider({ limits, fetch: f, allowExecute: true }).getActions(agentKitWallet()).map((a) => a.name);
-  assert.ok(names.includes("recta_execute") && names.includes("recta_pay_debt"));
-  const tx = { chainId: 8453, to: `0x${"33".repeat(20)}`, data: "0x", value: 0n, gas: 21000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n };
   const sent = [];
-  await assert.rejects(agentKitSigner(agentKitWallet({ code: "0x6080604052", sent })).sendTransaction(tx), /EOA wallet provider only/);
-  await assert.rejects(agentKitSigner(agentKitWallet({ sent })).sendTransaction({ ...tx, chainId: 42161 }), /on chain 8453/);
+  // Like the real ViemWalletProvider: re-estimates gas and fees, keeping only to/data/value.
+  const rewriting = { ...agentKitWallet(), sendTransaction: async (tx) => { sent.push({ to: tx.to, data: tx.data, value: tx.value, gas: 999_999n, maxFeePerGas: 999n, maxPriorityFeePerGas: 99n }); return `0x${"ab".repeat(32)}`; } };
+  const names = rectaActionProvider({ limits, fetch: f, allowExecute: true }).getActions(rewriting).map((a) => a.name);
+  assert.ok(!names.includes("recta_execute") && !names.includes("recta_pay_debt"));
+  const tx = { chainId: 8453, to: `0x${"33".repeat(20)}`, data: "0x", value: 0n, gas: 21000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n };
+  await assert.rejects(agentKitSigner(rewriting).sendTransaction(tx), /re-estimate gas and fees/);
   assert.equal(sent.length, 0);
-  await agentKitSigner(agentKitWallet({ code: `0xef0100${"22".repeat(20)}`, sent })).sendTransaction(tx);
-  await agentKitSigner(agentKitWallet({ sent })).sendTransaction(tx);
-  assert.equal(sent.length, 2);
-  assert.deepEqual(sent[0], { to: tx.to, data: tx.data, value: 0n, gas: 21000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, type: "eip1559" });
 });
 
 test("GOAT: evaluation tools only, signed with the GOAT wallet, never sending", async () => {

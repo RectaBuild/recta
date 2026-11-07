@@ -71,7 +71,8 @@ wherever the fit check (`GET /v1/golden-corridor/fit`) lists it in `declarable_b
 
 ## Coinbase AgentKit
 
-The same tools as AgentKit actions, signed and sent by the agent's own AgentKit EVM wallet provider:
+The evaluation tools as AgentKit actions (`recta_fit`, `recta_trial_evaluation`, `recta_evaluate`, `recta_preview`,
+`recta_report`, `recta_ledger`), signed by the agent's own AgentKit EVM wallet provider:
 
 ```ts
 import { AgentKit } from "@coinbase/agentkit";
@@ -83,9 +84,10 @@ const agentkit = await AgentKit.from({
 });
 ```
 
-`recta_execute` and `recta_pay_debt` appear only with `allowExecute: true`. An AgentKit wallet provider lives on one
-chain, so a route that starts on another chain is refused, and routes are sent only from an EOA wallet provider (an
-EIP-7702 delegated EOA counts as one). It needs `zod`, which AgentKit already installs.
+The provider never sends a transaction: AgentKit's wallet providers replace a transaction's gas limit and fee caps
+with their own, and Recta's route is committed to exact ones. Preview the route there and send it with
+`@recta/client` or this server. An AgentKit wallet provider lives on one chain, so an evaluation for a route that
+starts on another chain is refused. It needs `zod`, which AgentKit already installs.
 
 ## GOAT
 
