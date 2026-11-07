@@ -64,7 +64,9 @@ wallet's funds.
 `recta_execute` and `recta_pay_debt` are not even listed to the agent unless execution is enabled.
 
 The saving is measured against `baseline_provider`: the route your agent would use without Recta. Declare the one it
-really uses. If that route is already the cheapest, Recta answers with no saving and charges nothing; keep your route.
+really uses. If your agent bridges through LI.FI (its public API or an aggregator built on it), declare `lifi`
+wherever the fit check (`GET /v1/golden-corridor/fit`) lists it in `declarable_baselines`; it is refused with
+`latency_class` SECONDS or MINUTES. Recta reads LI.FI's own transaction, its fee included. If that route is already the cheapest, Recta answers with no saving and charges nothing; keep your route.
 
 ## Limits of this version
 
