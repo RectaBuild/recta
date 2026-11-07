@@ -1,6 +1,6 @@
 {
   "name": "@recta/client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Client for Recta (api.recta.build): evaluate a cross-chain stablecoin transfer, authorize Recta's 5 %-of-verified-saving fee, execute the committed route and report it, with local checks before every signature.",
   "license": "MIT",
   "author": "Recta (https://recta.build)",
@@ -45,7 +45,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "peerDependencies": {
-    "viem": ">=2.56.3 <3"
+    "viem": ">=2.38.3 <3"
   },
   "publishConfig": {
     "access": "public",

@@ -1,6 +1,6 @@
 {
   "name": "@recta/mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "mcpName": "io.github.RectaBuild/recta",
   "description": "Local MCP server for Recta (api.recta.build): lets any MCP agent evaluate, authorize and execute cheaper cross-chain stablecoin routes with its own key, which never leaves the machine.",
   "license": "MIT",
@@ -21,7 +21,11 @@
     "cross-chain",
     "bridge",
     "stablecoin",
-    "usdc"
+    "usdc",
+    "agentkit",
+    "coinbase-agentkit",
+    "goat-sdk",
+    "elizaos"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -33,6 +37,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./agentkit": {
+      "types": "./dist/agentkit.d.ts",
+      "import": "./dist/agentkit.js"
+    },
+    "./goat": {
+      "types": "./dist/goat.d.ts",
+      "import": "./dist/goat.js"
     }
   },
   "files": [
@@ -48,15 +60,24 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@recta/client": "0.1.0",
+    "@recta/client": "0.1.1",
     "viem": "2.56.3"
   },
   "devDependencies": {
     "@types/node": "22.20.2",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "zod": "3.25.76"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "peerDependencies": {
+    "zod": "^3.22.4 || ^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
   }
 }

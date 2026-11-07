@@ -24,7 +24,8 @@ jobs:
       - name: Build against the lowest and the latest viem in range
         run: |
           set -euo pipefail
-          for v in 2.56.3 "<3"; do
+          # 2.38.3 is the viem @coinbase/agentkit 0.10.4 pins: a lower peer range lets AgentKit projects install the client.
+          for v in 2.38.3 "<3"; do
             rm -rf node_modules dist
             npm install --no-save --ignore-scripts "viem@$v" "typescript@5.9.3"
             npx tsc -p tsconfig.build.json

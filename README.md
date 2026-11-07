@@ -21,6 +21,8 @@ agent's own wallet, with local checks before every signature. Published to npm f
 
 [`packages/mcp`](packages/mcp) is `@recta/mcp`: a local MCP server over the client, so Claude, Cursor or any MCP agent
 runs the same flow with its own key, which stays on the machine. Execution is off until the operator turns it on.
+The evaluation tools also come as a Coinbase AgentKit action provider (`@recta/mcp/agentkit`) and a GOAT plugin
+(`@recta/mcp/goat`).
 
 ## What is in this repository
 
