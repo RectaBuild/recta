@@ -55,6 +55,7 @@ wallet's funds.
 | --- | --- | --- |
 | `recta_fit` | nothing | Does Recta cover this corridor, and which contracts would a route touch? |
 | `recta_evaluate` | a request signature | Asks Recta whether a cheaper route than `baseline_provider` can be proven. Free. |
+| `recta_trial_evaluation` | nothing | The same question unsigned: only whether a saving exists, its amount and Recta's 5 %. No route, nothing stored, 3 a day per address. |
 | `recta_preview` | a request signature | Shows the fee ceiling Recta asks you to authorize, after the local permit check. |
 | `recta_execute` | fee permit, transactions | Signs the checked permit, sends the checked transactions, reports them. Only with `RECTA_ALLOW_EXECUTE=yes`. |
 | `recta_report` | a request signature | Reports an executed route again (after `PENDING`). |
@@ -67,6 +68,46 @@ The saving is measured against `baseline_provider`: the route your agent would u
 really uses. If your agent bridges through LI.FI (its public API or an aggregator built on it), declare `lifi`
 wherever the fit check (`GET /v1/golden-corridor/fit`) lists it in `declarable_baselines`; it is refused with
 `latency_class` SECONDS or MINUTES. Recta reads LI.FI's own transaction, its fee included. If that route is already the cheapest, Recta answers with no saving and charges nothing; keep your route.
+
+## Coinbase AgentKit
+
+The same tools as AgentKit actions, signed and sent by the agent's own AgentKit EVM wallet provider:
+
+```ts
+import { AgentKit } from "@coinbase/agentkit";
+import { rectaActionProvider } from "@recta/mcp/agentkit";
+
+const agentkit = await AgentKit.from({
+  walletProvider, // e.g. a ViemWalletProvider or CdpEvmWalletProvider on Base
+  actionProviders: [rectaActionProvider({ limits: { maxPermitUsdcAtomic: 1_000_000n, maxNativeValueWei: 0n, minOutputBps: 9900 } })],
+});
+```
+
+`recta_execute` and `recta_pay_debt` appear only with `allowExecute: true`. An AgentKit wallet provider lives on one
+chain, so a route that starts on another chain is refused, and routes are sent only from an EOA wallet provider (an
+EIP-7702 delegated EOA counts as one). It needs `zod`, which AgentKit already installs.
+
+## GOAT
+
+The evaluation tools as a GOAT plugin, signed with the agent's GOAT EVM wallet:
+
+```ts
+import { getOnChainTools } from "@goat-sdk/adapter-vercel-ai"; // or any GOAT adapter
+import { recta } from "@recta/mcp/goat";
+
+const tools = await getOnChainTools({
+  wallet: viem(walletClient),
+  plugins: [recta({ limits: { maxPermitUsdcAtomic: 1_000_000n, maxNativeValueWei: 0n, minOutputBps: 9900 }, estimateFeesPerGas: () => publicClient.estimateFeesPerGas() })],
+});
+```
+
+The plugin never sends a transaction: a GOAT `sendTransaction` takes no gas limit or fee caps, and Recta's route is
+committed to exact ones. Preview the route there and send it with `@recta/client` or this server.
+
+## ElizaOS and other MCP hosts
+
+ElizaOS agents load MCP servers through its MCP plugin: point it at `npx -y @recta/mcp` with the environment above,
+or at the hosted endpoint `https://api.recta.build/mcp` for the unsigned tools.
 
 ## Limits of this version
 

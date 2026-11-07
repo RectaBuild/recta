@@ -6,7 +6,7 @@ import { createRectaClient, RectaCheckError, RectaDebtError, RectaHttpError, pin
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.2" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.3" } as const;
 
 export interface LocalServerOptions {
   readonly signer: RectaSigner;
@@ -28,6 +28,20 @@ const ROUTE = {
   destination_asset: { type: "string", description: "Defaults to source_asset." },
 } as const;
 
+const EVALUATE_INPUT = {
+  type: "object",
+  properties: {
+    ...ROUTE,
+    amount: { type: "string", description: "Whole units, e.g. \"100\". Recta accepts 10 to 100000." },
+    baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included) (thorchain or chainflip from Bitcoin). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
+    recipient: { type: "string", description: "Destination address; defaults to the local wallet." },
+    guarantee_class: { type: "string", enum: ["COMMITTED_ENFORCED", "ANY"], description: "Default ANY." },
+    latency_class: { type: "string", enum: ["SECONDS", "MINUTES", "FINALITY_BOUND", "ANY"], description: "Default ANY." },
+  },
+  required: ["source_network", "source_asset", "destination_network", "amount", "baseline_provider"],
+  additionalProperties: false,
+} as const;
+
 export const TOOLS = [
   {
     name: "recta_fit",
@@ -37,19 +51,12 @@ export const TOOLS = [
   {
     name: "recta_evaluate",
     description: "Before a cross-chain stablecoin transfer: ask Recta, signed with the local key, whether a cheaper route than the one you would use (baseline_provider) can be proven at the same chain state. Free; returns a result_id. If there is no saving, keep your own route: nothing is owed.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        ...ROUTE,
-        amount: { type: "string", description: "Whole units, e.g. \"100\". Recta accepts 10 to 100000." },
-        baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included) (thorchain or chainflip from Bitcoin). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
-        recipient: { type: "string", description: "Destination address; defaults to the local wallet." },
-        guarantee_class: { type: "string", enum: ["COMMITTED_ENFORCED", "ANY"], description: "Default ANY." },
-        latency_class: { type: "string", enum: ["SECONDS", "MINUTES", "FINALITY_BOUND", "ANY"], description: "Default ANY." },
-      },
-      required: ["source_network", "source_asset", "destination_network", "amount", "baseline_provider"],
-      additionalProperties: false,
-    },
+    inputSchema: EVALUATE_INPUT,
+  },
+  {
+    name: "recta_trial_evaluation",
+    description: "Free, unsigned and stored nowhere: the same question as recta_evaluate with the same arguments, answered only with whether a cheaper provable route exists, the saving (lower bound, USDC) and Recta's 5 % of it. Names no route and returns no result_id; 3 a day per address. Use it to see whether Recta is worth a signature.",
+    inputSchema: EVALUATE_INPUT,
   },
   {
     name: "recta_preview",
@@ -78,6 +85,8 @@ export const TOOLS = [
   },
 ] as const;
 
+/** The unsigned trial (api.recta.build, BIT-OPS-079). */
+export const TRIAL_EVALUATION_PATH = "/v1/golden-corridor/trial-evaluation";
 const EXECUTING_TOOLS: ReadonlySet<string> = new Set(["recta_execute", "recta_pay_debt"]);
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const str = (args: Json, k: string): string => {
@@ -106,6 +115,26 @@ export function createLocalServer(options: LocalServerOptions) {
     return { id, request };
   };
 
+  /** The evaluation request for the local wallet, as recta_evaluate signs it and recta_trial_evaluation sends it unsigned. */
+  async function evaluationRequestOf(args: Json) {
+    const source = str(args, "source_network");
+    const [maxFee, priority] = await options.gasCapsFor(source);
+    return {
+      schema: "RECTA_COMMERCIAL_ECONOMIC_REQUEST_V1",
+      source_network: source,
+      source_asset: str(args, "source_asset"),
+      destination_network: str(args, "destination_network"),
+      destination_asset: opt(args, "destination_asset") ?? str(args, "source_asset"),
+      amount: str(args, "amount"),
+      // The client executes only the source side: no destination transaction is ever committed to.
+      constraints: { guarantee_class: opt(args, "guarantee_class") ?? "ANY", latency_class: opt(args, "latency_class") ?? "ANY", destination_execution: "NONE" },
+      sender: options.signer.address,
+      recipient: opt(args, "recipient") ?? options.signer.address,
+      baseline_provider: str(args, "baseline_provider"),
+      execution_authority: { headroom: "0.2", source_max_fee_per_gas_wei: maxFee.toString(), source_max_priority_fee_per_gas_wei: priority.toString() },
+    };
+  }
+
   async function call(name: string, args: Json): Promise<unknown> {
     switch (name) {
       case "recta_fit": {
@@ -114,26 +143,16 @@ export function createLocalServer(options: LocalServerOptions) {
         return await r.json();
       }
       case "recta_evaluate": {
-        const source = str(args, "source_network");
-        const [maxFee, priority] = await options.gasCapsFor(source);
-        const request = {
-          schema: "RECTA_COMMERCIAL_ECONOMIC_REQUEST_V1",
-          source_network: source,
-          source_asset: str(args, "source_asset"),
-          destination_network: str(args, "destination_network"),
-          destination_asset: opt(args, "destination_asset") ?? str(args, "source_asset"),
-          amount: str(args, "amount"),
-          // The client executes only the source side: no destination transaction is ever committed to.
-          constraints: { guarantee_class: opt(args, "guarantee_class") ?? "ANY", latency_class: opt(args, "latency_class") ?? "ANY", destination_execution: "NONE" },
-          sender: options.signer.address,
-          recipient: opt(args, "recipient") ?? options.signer.address,
-          baseline_provider: str(args, "baseline_provider"),
-          execution_authority: { headroom: "0.2", source_max_fee_per_gas_wei: maxFee.toString(), source_max_priority_fee_per_gas_wei: priority.toString() },
-        };
+        const request = await evaluationRequestOf(args);
         const decision = (await client.evaluate(request)) as Json;
         const id = decision["result_id"];
         if (typeof id === "string") requests.set(id, request);
         return decision;
+      }
+      case "recta_trial_evaluation": {
+        const r = await doFetch(`${pins.RECTA_ORIGIN}${TRIAL_EVALUATION_PATH}`, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(await evaluationRequestOf(args)) });
+        const text = await r.text();
+        try { return JSON.parse(text) as unknown; } catch { return { status: r.status, body: text }; }
       }
       case "recta_preview": {
         const { id, request } = requestOf(args);

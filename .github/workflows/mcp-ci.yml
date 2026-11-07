@@ -26,7 +26,7 @@ jobs:
           npx tsc -p tsconfig.build.json
           npm pack
           cd ../mcp
-          npm install --no-save --no-package-lock --ignore-scripts ../client/recta-client-*.tgz viem@2.56.3 typescript@5.9.3 @types/node@22.20.2
+          npm install --no-save --no-package-lock --ignore-scripts ../client/recta-client-*.tgz viem@2.56.3 typescript@5.9.3 @types/node@22.20.2 zod@3.25.76
           npx tsc -p tsconfig.build.json
       - name: The server answers initialize and tools/list over stdio
         working-directory: packages/mcp
@@ -36,7 +36,11 @@ jobs:
           echo "$out"
           echo "$out" | grep -q '"protocolVersion":"2025-06-18"'
           echo "$out" | grep -q '"recta_evaluate"'
+          echo "$out" | grep -q '"recta_trial_evaluation"'
           if echo "$out" | grep -q '"recta_execute"'; then echo "execution tools listed without RECTA_ALLOW_EXECUTE"; exit 1; fi
+      - name: AgentKit and GOAT adapters
+        working-directory: packages/mcp
+        run: node --test test/toolkits.test.mjs
       - name: Package contents
         working-directory: packages/mcp
         run: npm pack --dry-run
