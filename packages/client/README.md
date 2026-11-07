@@ -79,7 +79,8 @@ on any other chain is refused by CDP unless you add your own rule for it.
 
 The saving is measured against `baseline_provider`: the route your agent would use without Recta. Declare the one it
 really uses. If your agent bridges through LI.FI (its public API or an aggregator built on it), declare `lifi`
-(USDC between Ethereum, Arbitrum, Base, Optimism and Polygon): Recta reads LI.FI's own transaction, its fee included. If that route is already the cheapest, Recta answers with no saving and charges nothing.
+wherever the fit check (`GET /v1/golden-corridor/fit`) lists it in `declarable_baselines`; it is refused with
+`latency_class` SECONDS or MINUTES. Recta reads LI.FI's own transaction, its fee included. If that route is already the cheapest, Recta answers with no saving and charges nothing.
 
 ## What is checked before signing
 
