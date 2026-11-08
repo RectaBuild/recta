@@ -1,4 +1,4 @@
-export { createRectaClient, signedRequestMessage, type RectaClient, type RectaClientOptions, type FeeOutcome } from "./client.js";
+export { createRectaClient, signedRequestMessage, referrerQuery, type RectaClient, type RectaClientOptions, type FeeOutcome } from "./client.js";
 export { checkFeePermit, type FeePermitLimits } from "./fee.js";
 export { checkExecutionArtifact, pinnedRouteOf, type CheckedArtifact, type EvaluationRequestView, type ArtifactLimits } from "./artifact.js";
 export { PINNED_ROUTES, type PinnedRoute } from "./pinned-routes.js";

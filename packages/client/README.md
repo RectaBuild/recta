@@ -33,6 +33,7 @@ const recta = createRectaClient({
     maxNativeValueWei: 10n ** 15n,   // never attach more than 0.001 native to one route transaction
     minOutputBps: 9900,              // required, 1–10000: the route must guarantee the recipient at least 99 % of the amount sent
   },
+  referrer: "0x…",                   // optional: the integrator that ships this agent (see "Referral for integrators")
 });
 
 // Dry run: evaluates and checks, signs no permit, sends no transaction.
@@ -48,6 +49,18 @@ your signer's address. Each step is also available alone: `evaluate`, `authorize
 `ledger`, `payDebt`.
 
 Your account must be an EOA: Recta's signed requests are EIP-191 signatures recovered to the sender's address.
+
+## Referral for integrators
+
+If you ship Recta inside a plugin, framework or agent template, set your own EVM address once as the `referrer` and
+every agent that runs your integration carries it. Recta fixes it at the agent's first signed evaluation and never
+changes it afterwards. You earn 20 % of the fees Recta actually collects from those agents (confirmed on chain) for
+12 months, up to 200 USDC per agent, whether or not you pay fees yourself. One level only. The agent still pays exactly
+5 % of its verified saving: your share comes out of Recta's 5 %, never on top of it.
+
+The referrer travels in the query of the agent's own signed requests, so nobody relaying them can add, drop or change
+it. It is ignored when it is the agent's own address. Terms and your balance: `GET /v1/referrals/balance`, signed by
+your address, once Recta's referral program is on (it starts together with fee collection).
 
 ### Coinbase CDP accounts
 

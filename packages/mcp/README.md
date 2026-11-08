@@ -48,6 +48,7 @@ wallet's funds.
 | `RECTA_MAX_FEE_GWEI` | `50` | The highest source-chain `maxFeePerGas` an evaluation may commit to, whatever the RPC estimates. |
 | `RECTA_MAX_PRIORITY_FEE_GWEI` | `2` | The highest priority fee an evaluation may commit to. |
 | `RECTA_MIN_OUTPUT_BPS` | `9900` | The route must guarantee the recipient at least this share of the amount sent, in basis points (1–10000). |
+| `RECTA_REFERRER` | none | The EVM address of whoever set this agent up (a template or framework author). See "Referral for integrators". A malformed address stops the server. |
 
 ## Tools
 
@@ -80,7 +81,7 @@ import { rectaActionProvider } from "@recta/mcp/agentkit";
 
 const agentkit = await AgentKit.from({
   walletProvider, // e.g. a ViemWalletProvider or CdpEvmWalletProvider on Base
-  actionProviders: [rectaActionProvider({ limits: { maxPermitUsdcAtomic: 1_000_000n, maxNativeValueWei: 0n, minOutputBps: 9900 } })],
+  actionProviders: [rectaActionProvider({ limits: { maxPermitUsdcAtomic: 1_000_000n, maxNativeValueWei: 0n, minOutputBps: 9900 }, referrer: "0x…" /* optional: your address as the integrator */ })],
 });
 ```
 
@@ -99,12 +100,24 @@ import { recta } from "@recta/mcp/goat";
 
 const tools = await getOnChainTools({
   wallet: viem(walletClient),
-  plugins: [recta({ limits: { maxPermitUsdcAtomic: 1_000_000n, maxNativeValueWei: 0n, minOutputBps: 9900 }, estimateFeesPerGas: () => publicClient.estimateFeesPerGas() })],
+  plugins: [recta({ limits: { maxPermitUsdcAtomic: 1_000_000n, maxNativeValueWei: 0n, minOutputBps: 9900 }, referrer: "0x…" /* optional */, estimateFeesPerGas: () => publicClient.estimateFeesPerGas() })],
 });
 ```
 
 The plugin never sends a transaction: a GOAT `sendTransaction` takes no gas limit or fee caps, and Recta's route is
 committed to exact ones. Preview the route there and send it with `@recta/client` or this server.
+
+## Referral for integrators
+
+If you ship Recta inside a plugin, framework or agent template, set your own EVM address once as the `referrer` (`RECTA_REFERRER` for this server, the `referrer` option of the AgentKit provider and the GOAT plugin) and
+every agent that runs your integration carries it. Recta fixes it at the agent's first signed evaluation and never
+changes it afterwards. You earn 20 % of the fees Recta actually collects from those agents (confirmed on chain) for
+12 months, up to 200 USDC per agent, whether or not you pay fees yourself. One level only. The agent still pays exactly
+5 % of its verified saving: your share comes out of Recta's 5 %, never on top of it.
+
+The referrer travels in the query of the agent's own signed requests, so nobody relaying them can add, drop or change
+it. It is ignored when it is the agent's own address. Terms and your balance: `GET /v1/referrals/balance`, signed by
+your address, once Recta's referral program is on (it starts together with fee collection).
 
 ## ElizaOS and other MCP hosts
 

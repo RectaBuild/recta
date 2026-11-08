@@ -14,6 +14,12 @@ export interface RectaToolkitOptions {
   /** Ceilings on the source gas price an evaluation may commit to (defaults 50 gwei and 2 gwei, as `@recta/mcp`). */
   readonly maxFeePerGasWei?: bigint;
   readonly maxPriorityFeePerGasWei?: bigint;
+  /**
+   * Who referred the agents that run this toolkit (OD-REF-1): the EVM address of the plugin, framework or template
+   * author. Sent on the agent's own signed requests; Recta fixes it once, at the agent's first signed evaluation. The
+   * agent still pays exactly 5 % of its verified saving: the referrer's share comes out of Recta's 5 %.
+   */
+  readonly referrer?: string;
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
 }
@@ -59,6 +65,7 @@ export function rectaTools(
     limits: options.limits,
     allowExecute: options.allowExecute === true,
     gasCapsFor: async (network) => cappedGas(await wallet.feeEstimate(network), ceilings),
+    ...(options.referrer === undefined ? {} : { referrer: options.referrer }),
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });

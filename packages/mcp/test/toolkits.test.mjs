@@ -5,10 +5,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { keccak256, recoverMessageAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { signedRequestMessage } from "@recta/client";
+import { referrerQuery, signedRequestMessage } from "@recta/client";
 import { agentKitSigner, rectaActionProvider } from "../dist/agentkit.js";
 import { recta } from "../dist/goat.js";
 import { TOOLS } from "../dist/server.js";
+import { configFromEnv } from "../dist/index.js";
 
 const policy = readFileSync(new URL("./wallet-policy.fixture.json", import.meta.url), "utf8");
 const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
@@ -39,7 +40,7 @@ function agentKitWallet({ chainId = "8453", code = "0x", sent = [] } = {}) {
 
 async function recovers(call) {
   const h = call.headers;
-  const message = signedRequestMessage({ method: call.method, path: call.url.pathname, idempotencyKey: h["idempotency-key"] ?? "", bodyKeccak256: keccak256(call.body ?? new Uint8Array()), issuedAt: Number(h["x-recta-issued-at"]) });
+  const message = signedRequestMessage({ method: call.method, path: `${call.url.pathname}${call.url.search}`, idempotencyKey: h["idempotency-key"] ?? "", bodyKeccak256: keccak256(call.body ?? new Uint8Array()), issuedAt: Number(h["x-recta-issued-at"]) });
   return (await recoverMessageAddress({ message, signature: h["x-recta-signature"] })) === account.address;
 }
 
@@ -112,4 +113,47 @@ test("GOAT: evaluation tools only, signed with the GOAT wallet, never sending", 
   await evaluate.execute(evaluate.parameters.parse(args));
   assert.ok(await recovers(calls.at(-1)));
   assert.equal(JSON.parse(new TextDecoder().decode(calls.at(-1).body)).execution_authority.source_max_fee_per_gas_wei, "18000000");
+});
+
+const referrer = `0x${"Ab".repeat(20)}`;
+
+test("Referral in the integration: AgentKit and GOAT carry the author's referrer on every signed evaluation", async () => {
+  const { f, calls } = fakeFetch();
+  const by = Object.fromEntries(rectaActionProvider({ limits, fetch: f, referrer }).getActions(agentKitWallet()).map((a) => [a.name, a]));
+  await by.recta_evaluate.invoke(by.recta_evaluate.schema.parse(args));
+  const signed = calls.at(-1);
+  assert.equal(signed.url.pathname, "/v1/golden-corridor/commercial-evaluations");
+  assert.equal(signed.url.searchParams.get("referrer"), referrer.toLowerCase());
+  // The referrer is inside what the agent's own key signed: a relay cannot add, drop or change it.
+  assert.ok(await recovers(signed));
+  await by.recta_trial_evaluation.invoke(args);
+  assert.equal(calls.at(-1).url.search, "", "the unsigned trial carries no referrer");
+
+  const goat = recta({ limits, fetch: f, referrer, estimateFeesPerGas: async () => ({ maxFeePerGas: 9_000_000n, maxPriorityFeePerGas: 1_000_000n }) });
+  const goatWallet = { getAddress: () => account.address, getChain: () => ({ type: "evm", id: 8453 }), signMessage: async (message) => ({ signature: await account.signMessage({ message }) }), signTypedData: async (td) => ({ signature: await account.signTypedData(td) }) };
+  const evaluate = goat.getTools(goatWallet).find((t) => t.name === "recta_evaluate");
+  await evaluate.execute(evaluate.parameters.parse(args));
+  assert.equal(calls.at(-1).url.searchParams.get("referrer"), referrer.toLowerCase());
+  assert.ok(await recovers(calls.at(-1)));
+});
+
+test("Referral in the integration: no referrer, the signer's own address, or a malformed one", async () => {
+  const { f, calls } = fakeFetch();
+  const plain = Object.fromEntries(rectaActionProvider({ limits, fetch: f }).getActions(agentKitWallet()).map((a) => [a.name, a]));
+  await plain.recta_evaluate.invoke(plain.recta_evaluate.schema.parse(args));
+  assert.equal(calls.at(-1).url.search, "");
+  // Nobody refers itself: the integration author running its own agent sends no referrer.
+  assert.equal(referrerQuery(account.address, account.address.toLowerCase()), "");
+  assert.equal(referrerQuery(undefined, account.address), "");
+  assert.equal(referrerQuery(referrer, account.address), `?referrer=${referrer.toLowerCase()}`);
+  assert.throws(() => referrerQuery("0x1234", account.address), /referrer/);
+  assert.throws(() => rectaActionProvider({ limits, fetch: f, referrer: "alice.eth" }).getActions(agentKitWallet()), /referrer/);
+});
+
+test("Referral in the integration: npx @recta/mcp reads RECTA_REFERRER", () => {
+  const key = `0x${"11".repeat(32)}`;
+  assert.equal(configFromEnv({ RECTA_PRIVATE_KEY: key }).referrer, undefined);
+  assert.equal(configFromEnv({ RECTA_PRIVATE_KEY: key, RECTA_REFERRER: "" }).referrer, undefined);
+  assert.equal(configFromEnv({ RECTA_PRIVATE_KEY: key, RECTA_REFERRER: referrer }).referrer, referrer);
+  assert.throws(() => configFromEnv({ RECTA_PRIVATE_KEY: key, RECTA_REFERRER: "0xnope" }), /RECTA_REFERRER/);
 });
