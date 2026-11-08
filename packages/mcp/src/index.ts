@@ -24,6 +24,8 @@ export interface EnvConfig {
   /** Operator ceilings on the source gas price an evaluation may commit to, whatever the RPC estimates (Fable #260 B-1). */
   readonly maxFeePerGasWei: bigint;
   readonly maxPriorityFeePerGasWei: bigint;
+  /** RECTA_REFERRER: who referred this agent (OD-REF-1), usually the author of the template or setup that runs it. */
+  readonly referrer?: string;
 }
 
 const GWEI = /^\d+(\.\d{1,9})?$/;
@@ -60,6 +62,8 @@ export function configFromEnv(env: Readonly<Record<string, string | undefined>>)
   const [whole, frac = ""] = usdc.split(".");
   const native = env["RECTA_MAX_NATIVE_WEI"] ?? "0";
   if (!/^\d+$/.test(native)) throw new Error("RECTA_MAX_NATIVE_WEI must be an integer number of wei");
+  const referrer = env["RECTA_REFERRER"];
+  if (referrer !== undefined && referrer !== "" && !/^0x[0-9a-fA-F]{40}$/.test(referrer)) throw new Error("RECTA_REFERRER must be the referrer's 0x-prefixed EVM address");
   const bps = Number(env["RECTA_MIN_OUTPUT_BPS"] ?? "9900");
   if (!Number.isInteger(bps) || bps < 1 || bps > 10_000) throw new Error("RECTA_MIN_OUTPUT_BPS must be an integer from 1 to 10000");
   return {
@@ -71,6 +75,7 @@ export function configFromEnv(env: Readonly<Record<string, string | undefined>>)
     allowExecute: env["RECTA_ALLOW_EXECUTE"] === "yes",
     maxFeePerGasWei: gweiToWei(env["RECTA_MAX_FEE_GWEI"] ?? "50", "RECTA_MAX_FEE_GWEI"),
     maxPriorityFeePerGasWei: gweiToWei(env["RECTA_MAX_PRIORITY_FEE_GWEI"] ?? "2", "RECTA_MAX_PRIORITY_FEE_GWEI"),
+    ...(referrer === undefined || referrer === "" ? {} : { referrer }),
   };
 }
 
@@ -103,6 +108,7 @@ export async function main(): Promise<void> {
     chain: viemChainReader((id) => createPublicClient({ chain: chainOf(id), transport: transport(id) })),
     limits: { maxPermitUsdcAtomic: config.maxPermitUsdcAtomic, maxNativeValueWei: config.maxNativeValueWei, minOutputBps: config.minOutputBps },
     allowExecute: config.allowExecute,
+    ...(config.referrer === undefined ? {} : { referrer: config.referrer }),
     gasCapsFor: gasCapsFrom(config, ids, (id) => createPublicClient({ chain: chainOf(id), transport: transport(id) }).estimateFeesPerGas()),
   });
   const lines = createInterface({ input: process.stdin });

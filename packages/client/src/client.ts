@@ -17,6 +17,14 @@ export interface RectaClientOptions {
     /** The least the recipient must be guaranteed, in basis points of the amount sent (e.g. 9950 = 99.5 %). */
     readonly minOutputBps: number;
   };
+  /**
+   * Who referred this agent to Recta (OD-REF-1): an EVM address, usually the author of the plugin, framework or template
+   * that ships this client. Sent as `?referrer=` on the signed evaluation and fee-authorization requests, so it is part
+   * of what the agent's own key signs. Recta fixes it once, at the agent's first signed evaluation, and never changes it;
+   * the agent still pays exactly 5 % of its verified saving (the referrer's share comes out of Recta's 5 %). Ignored
+   * when it is the signer's own address (nobody can refer itself).
+   */
+  readonly referrer?: string;
   /** Defaults to the global fetch. */
   readonly fetch?: typeof fetch;
   /** Milliseconds since the epoch; defaults to Date.now. */
@@ -41,6 +49,15 @@ interface Answer {
 }
 
 const RESULT_ID = /^[A-Za-z0-9_-]+$/;
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+/** The `?referrer=` suffix for a configured referrer: lower-cased, empty when none or when it is the payer itself. */
+export function referrerQuery(referrer: string | undefined, payer: string): string {
+  if (referrer === undefined) return "";
+  if (!ADDRESS.test(referrer)) throw new RectaCheckError("referrer", "the referrer must be a 0x-prefixed 20-byte EVM address");
+  const r = referrer.toLowerCase();
+  return r === payer.toLowerCase() ? "" : `?referrer=${r}`;
+}
 const field = (v: unknown, k: string): unknown => (typeof v === "object" && v !== null ? (v as Record<string, unknown>)[k] : undefined);
 const resultIdOf = (v: string): string => {
   if (!RESULT_ID.test(v)) throw new RectaCheckError("result_id", "not a Recta result id");
@@ -64,6 +81,7 @@ export function createRectaClient(options: RectaClientOptions) {
   const now = options.now ?? Date.now;
   const nowUnix = (): bigint => BigInt(Math.floor(now() / 1000));
   const payer = signer.address.toLowerCase();
+  const referral = referrerQuery(options.referrer, payer);
   let policyChecked = false;
 
   async function call(method: "GET" | "POST", path: string, body?: unknown, idempotencyKey?: string, signed = true): Promise<Answer> {
@@ -98,7 +116,7 @@ export function createRectaClient(options: RectaClientOptions) {
   async function evaluate(request: EvaluationRequestView & Record<string, unknown>, opts: { readonly idempotencyKey?: string } = {}): Promise<Record<string, unknown>> {
     if (typeof request.sender !== "string" || request.sender.toLowerCase() !== payer) throw new RectaCheckError("sender", "the request's sender must be the signer");
     await walletPolicy();
-    const a = await call("POST", PATHS.evaluations, request, opts.idempotencyKey ?? crypto.randomUUID());
+    const a = await call("POST", `${PATHS.evaluations}${referral}`, request, opts.idempotencyKey ?? crypto.randomUUID());
     if (a.status === 402) throw new RectaDebtError(a.body, field(a.body, "debt_offer") ?? null);
     if (a.status !== 200) throw new RectaHttpError(a.status, a.body);
     return a.body as Record<string, unknown>;
@@ -128,7 +146,7 @@ export function createRectaClient(options: RectaClientOptions) {
       });
       if (opts.dryRun === true) return { fee: { kind: "DRY_RUN", amountUsdcAtomic: checked.amount, typedData: checked.typedData }, artifact: undefined };
       const signature = await signer.signTypedData(checked.typedData);
-      const s = await call("POST", `${PATHS.evaluations}/${id}/fee-authorization`, { signature, amount_usdc_atomic: checked.amount.toString() });
+      const s = await call("POST", `${PATHS.evaluations}/${id}/fee-authorization${referral}`, { signature, amount_usdc_atomic: checked.amount.toString() });
       if (s.status === 200 || s.status === 201) return { fee: { kind: "AUTHORIZED", amountUsdcAtomic: checked.amount, signature }, artifact: field(s.body, "artifact") };
       if (!(s.status === 409 && field(s.body, "reason_code") === "OFFER_STALE")) throw new RectaHttpError(s.status, s.body);
     }

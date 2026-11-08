@@ -6,7 +6,7 @@ import { createRectaClient, RectaCheckError, RectaDebtError, RectaHttpError, pin
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.3" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.4" } as const;
 
 export interface LocalServerOptions {
   readonly signer: RectaSigner;
@@ -16,6 +16,8 @@ export interface LocalServerOptions {
   readonly allowExecute: boolean;
   /** Gas caps for a source chain when the tool call gives none: `[maxFeePerGasWei, maxPriorityFeePerGasWei]`. */
   readonly gasCapsFor: (network: string) => Promise<readonly [bigint, bigint]>;
+  /** Who referred this agent (OD-REF-1): see `RectaClientOptions.referrer`. Usually set by the integration's author. */
+  readonly referrer?: string;
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
 }
@@ -101,6 +103,7 @@ export function createLocalServer(options: LocalServerOptions) {
     signer: options.signer,
     chain: options.chain,
     limits: options.limits,
+    ...(options.referrer === undefined ? {} : { referrer: options.referrer }),
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
