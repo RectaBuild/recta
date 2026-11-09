@@ -1,4 +1,4 @@
-import { createRectaClient, RectaCheckError, RectaDebtError, RectaHttpError, pins, type RectaChainReader, type RectaClient, type RectaSigner } from "@recta/client";
+import { createRectaClient, safeErrorText, RectaCheckError, RectaDebtError, RectaHttpError, pins, type RectaChainReader, type RectaClient, type RectaSigner } from "@recta/client";
 
 /**
  * A local MCP server (stdio, JSON-RPC 2.0) that runs Recta's flow with a key that stays on the agent's machine. It is
@@ -92,8 +92,8 @@ export const TOOLS = [
   },
   {
     name: "recta_fee_funds",
-    description: "Free, signs nothing: whether the local wallet can pay a Recta fee. Shows its USDC balance on Base and its USDC allowance to Permit2, against the operator's fee cap. A fee permit is only signed when both cover it, so a route never executes with a fee Recta cannot collect.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    description: "Free, signs nothing: whether the local wallet can pay a Recta fee. Shows its USDC balance on Base and its USDC allowance to Permit2, against amount_usdc (default: the operator's fee cap). A fee permit is only signed, and a route only sent, when both cover the permit (plus the transfer itself when it starts from Base USDC), so a route never executes with a fee Recta cannot collect.",
+    inputSchema: { type: "object", properties: { amount_usdc: { type: "string", description: "USDC to check against, e.g. \"0.5\" (the fee ceiling recta_preview shows); default the operator's fee cap." } }, additionalProperties: false },
   },
   {
     name: "recta_approve_fee",
@@ -188,7 +188,7 @@ export function createLocalServer(options: LocalServerOptions) {
       }
       case "recta_preview": {
         const { id, request } = requestOf(args);
-        const fee = await client.authorizeFee(id, { dryRun: true });
+        const fee = await client.authorizeFee(id, { dryRun: true, request });
         if (fee.fee.kind === "DRY_RUN") {
           const funds = fee.fee.funds;
           return {
@@ -204,7 +204,7 @@ export function createLocalServer(options: LocalServerOptions) {
       case "recta_execute": {
         if (!options.allowExecute) throw new RectaCheckError("execution_disabled", "the operator has not enabled execution (RECTA_ALLOW_EXECUTE=yes)");
         const { id, request } = requestOf(args);
-        const { fee, artifact } = await client.authorizeFee(id);
+        const { fee, artifact } = await client.authorizeFee(id, { request });
         const sent = await client.execute(id, artifact, request);
         const report = await client.report(id, sent.originTxHash, sent.approvalTxHash);
         return { fee: fee.kind, ...sent, report: report.stage, recta: report.body };
@@ -217,8 +217,13 @@ export function createLocalServer(options: LocalServerOptions) {
         const r = await client.report(id, origin as `0x${string}`, approval as `0x${string}` | undefined);
         return { report: r.stage, recta: r.body };
       }
-      case "recta_fee_funds":
-        return json(await client.feeFunds());
+      case "recta_fee_funds": {
+        const raw = opt(args, "amount_usdc");
+        if (raw === undefined) return json(await client.feeFunds());
+        if (!USDC_AMOUNT.test(raw)) throw new RectaCheckError("input", "amount_usdc must be a decimal USDC amount, e.g. 1 or 0.5");
+        const [whole, frac = ""] = raw.split(".");
+        return json(await client.feeFunds(BigInt(whole!) * 1_000_000n + BigInt(frac.padEnd(6, "0"))));
+      }
       case "recta_approve_fee": {
         if (!options.allowExecute) throw new RectaCheckError("execution_disabled", "the operator has not enabled execution (RECTA_ALLOW_EXECUTE=yes)");
         const raw = opt(args, "amount_usdc");
@@ -268,7 +273,7 @@ export function createLocalServer(options: LocalServerOptions) {
         try {
           return ok({ content: text(await call(name, args)), isError: false });
         } catch (e) {
-          const body = e instanceof RectaDebtError ? { error: "DEBT", debt_offer: e.offer } : e instanceof RectaHttpError ? { error: "HTTP", status: e.status, reason_code: e.reasonCode, body: e.body } : e instanceof RectaCheckError ? { error: "CHECK_FAILED", check: e.check, message: e.message } : { error: "FAILED", message: e instanceof Error ? e.message : String(e) };
+          const body = e instanceof RectaDebtError ? { error: "DEBT", debt_offer: e.offer } : e instanceof RectaHttpError ? { error: "HTTP", status: e.status, reason_code: e.reasonCode, body: e.body } : e instanceof RectaCheckError ? { error: "CHECK_FAILED", check: e.check, message: e.message } : { error: "FAILED", message: safeErrorText(e) };
           return ok({ content: text(body), isError: true });
         }
       }

@@ -18,7 +18,7 @@ It never receives a key. Before it signs or sends anything it checks it locally,
 npm install @recta/client viem
 ```
 
-`viem` (>= 2.30, < 3) is the only dependency, and you choose its version.
+`viem` (>= 2.38.3, < 3) is the only dependency, and you choose its version.
 
 ## Use
 
@@ -121,6 +121,14 @@ The approval is bounded: `feeApproval` defaults to, and may not exceed, `maxPerm
 fee lowers the allowance; approve again when `feeFunds` reports it short. The check is a snapshot at signing: a wallet
 that later spends its USDC or revokes the allowance leaves the fee unpaid, which Recta records as a debt to settle
 before the next evaluation (`payDebt`).
+
+When the route itself starts from USDC on Base, the transfer spends the same balance before the fee is pulled, so the
+balance must cover the transfer plus the fee: `run` passes the request to `authorizeFee` for that (pass it yourself as
+`authorizeFee(id, { request })` when calling the steps alone), and `execute` checks the funds again, for every fee
+this client authorized or found authorized, right before the first transaction. A reader error never carries the RPC
+URL (it may hold an API key).
+
+Since 0.1.4 `RectaChainReader` requires `readFeeFunds`; `createRectaClient` refuses a reader without it.
 
 A custom `RectaChainReader` must implement `readFeeFunds(owner)`; when it cannot read Base it must throw, and the permit
 is then not signed (a dry run reports `funds: null` and the reason).

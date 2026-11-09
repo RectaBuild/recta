@@ -88,7 +88,7 @@ for (const [label, funds, check] of [
 
 test("K2, preview: reports what is short and still signs nothing", async () => {
   const { f, posted } = collectingRecta();
-  const w = wallet({ balanceUsdcAtomic: usdc(50), permit2AllowanceUsdcAtomic: 0n });
+  const w = wallet({ balanceUsdcAtomic: usdc(200), permit2AllowanceUsdcAtomic: 0n });
   const s = server(w, f, false);
   await s.call("recta_evaluate", args);
   const p = await s.call("recta_preview", { result_id: "r_test" });
@@ -169,4 +169,84 @@ test("tools/list: recta_fee_funds always; recta_approve_fee only with execution 
   assert.ok((await names(false)).includes("recta_fee_funds"));
   assert.ok(!(await names(false)).includes("recta_approve_fee"));
   assert.ok((await names(true)).includes("recta_approve_fee"));
+});
+
+// Fable B-1 / M-1 / M-2 / L-1 on recta #12.
+const baseUsdc = { ...args, amount: "100" };
+
+test("B-1: a route from Base USDC must leave the fee in the balance after the transfer, or nothing is signed", async () => {
+  const { f, posted } = collectingRecta();
+  const w = wallet({ balanceUsdcAtomic: usdc(100), permit2AllowanceUsdcAtomic: usdc(1) });
+  const s = server(w, f);
+  await s.call("recta_evaluate", baseUsdc);
+  await assert.rejects(s.call("recta_execute", { result_id: "r_test" }), (e) => e.check === "fee_balance" && /the transfer itself/.test(e.message));
+  assert.equal(w.signed.length, 0);
+  assert.equal(w.sent.length, 0);
+  assert.equal(posted.length, 0);
+  const p = await server(w, f, false);
+  await p.call("recta_evaluate", baseUsdc);
+  const preview = await p.call("recta_preview", { result_id: "r_test" });
+  assert.equal(preview.fee_funds.reservedForRouteUsdcAtomic, "100000000");
+  assert.deepEqual(preview.fee_funds.missing, ["balance"]);
+});
+
+test("B-1: with the transfer plus the fee in the balance, it signs", async () => {
+  const { f, posted } = collectingRecta();
+  const w = wallet({ balanceUsdcAtomic: usdc(100.5), permit2AllowanceUsdcAtomic: usdc(0.5) });
+  const client = createRectaClient({ signer: w.signer, chain: w.chain, limits, fetch: f, now: () => NOW });
+  const out = await client.authorizeFee("r_test", { request: { ...baseUsdc, sender: account.address, recipient: account.address } });
+  assert.equal(out.fee.kind, "AUTHORIZED");
+  assert.equal(posted.length, 1);
+});
+
+test("M-1: a permit stored earlier (ALREADY_AUTHORIZED) is checked again before any transaction is sent", async () => {
+  const stored = { status: "AUTHORIZED", max_fee_authorization_usdc_atomic: "500000", carried_usdc_atomic: "0" };
+  const f = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path.endsWith("/wallet-policy")) return new Response(policy, { status: 200 });
+    if (path.endsWith("/execution-artifact")) return new Response(JSON.stringify({ fee_authorization: stored, artifact: { any: "artifact" } }), { status: 200 });
+    return new Response(JSON.stringify({ result_id: "r_test", decision: { state: "VERIFIED_POSITIVE" } }), { status: 200 });
+  };
+  const w = wallet({ balanceUsdcAtomic: 0n, permit2AllowanceUsdcAtomic: 0n });
+  let reads = 0;
+  const inner = w.chain.readFeeFunds;
+  w.chain.readFeeFunds = async (o) => { reads += 1; return inner(o); };
+  const client = createRectaClient({ signer: w.signer, chain: w.chain, limits, fetch: f, now: () => NOW });
+  const { fee } = await client.authorizeFee("r_test");
+  assert.equal(fee.kind, "ALREADY_AUTHORIZED");
+  await assert.rejects(client.execute("r_test", { any: "artifact" }, { ...args, sender: account.address, recipient: account.address }), (e) => e.check === "fee_allowance");
+  assert.equal(reads, 1);
+  assert.equal(w.sent.length, 0);
+  // A stored authorization without a readable amount is refused, never assumed.
+  const bad = async (url) => new URL(String(url)).pathname.endsWith("/execution-artifact") ? new Response(JSON.stringify({ fee_authorization: { status: "AUTHORIZED" }, artifact: {} }), { status: 200 }) : f(url);
+  await assert.rejects(createRectaClient({ signer: w.signer, chain: w.chain, limits, fetch: bad, now: () => NOW }).authorizeFee("r_test"), (e) => e.check === "fee_amount");
+});
+
+test("M-2: a reader error never carries the RPC URL (an API key may be in it)", async () => {
+  const { safeErrorText } = await import("@recta/client");
+  const e = Object.assign(new Error("HTTP request failed.\n\nURL: https://base.example/v2/SECRET-API-KEY-123\nVersion: viem"), { shortMessage: "HTTP request failed." });
+  assert.equal(safeErrorText(e), "HTTP request failed.");
+  assert.equal(safeErrorText(new Error("fetch failed for https://x.example/?apikey=SECRET-1 now")), "fetch failed for <url> now");
+  const { f } = collectingRecta();
+  const w = wallet(undefined);
+  w.chain.readFeeFunds = async () => { throw new Error("boom at https://rpc.example/key/SECRET-2"); };
+  const s = server(w, f, false);
+  await s.call("recta_evaluate", args);
+  const p = await s.call("recta_preview", { result_id: "r_test" });
+  assert.ok(!JSON.stringify(p).includes("SECRET-2"));
+  const reply = await s.handle({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "recta_fee_funds", arguments: {} } });
+  assert.ok(!JSON.stringify(reply).includes("SECRET-2"));
+});
+
+test("L-1: a chain reader without readFeeFunds is refused when the client is created", () => {
+  const w = wallet({});
+  assert.throws(() => createRectaClient({ signer: w.signer, chain: { waitForSuccess: async () => true }, limits, fetch: async () => new Response("{}") }), (e) => e.check === "chain_reader");
+});
+
+test("L-2: recta_fee_funds checks against the amount asked for", async () => {
+  const w = wallet({ balanceUsdcAtomic: usdc(50), permit2AllowanceUsdcAtomic: usdc(0.5) });
+  const s = server(w, collectingRecta().f, false);
+  assert.equal((await s.call("recta_fee_funds", {})).ready, false);
+  assert.equal((await s.call("recta_fee_funds", { amount_usdc: "0.5" })).ready, true);
+  await assert.rejects(s.call("recta_fee_funds", { amount_usdc: "x" }), (e) => e.check === "input");
 });

@@ -1,7 +1,7 @@
 import type { Account, Chain, Hex, PublicClient, Transport, TransactionSerializable, WalletClient } from "viem";
 import { toAccount } from "viem/accounts";
 import { FEE_CHAIN_ID, PERMIT2, USDC_BASE } from "./constants.js";
-import { ERC20_READ_ABI, type FeeFunds } from "./funds.js";
+import { ERC20_READ_ABI, safeErrorText, type FeeFunds } from "./funds.js";
 
 /** One EIP-1559 transaction of an execution artifact, as this package asks a signer to send it. */
 export interface RectaTransaction {
@@ -157,13 +157,18 @@ export function viemChainReader(publicClientFor: (chainId: number) => PublicClie
     waitForSuccess: async (chainId, hash) => (await publicClientFor(chainId).waitForTransactionReceipt({ hash })).status === "success",
     readFeeFunds: async (owner) => {
       const base = publicClientFor(FEE_CHAIN_ID);
-      const chainId = await base.getChainId();
+      const chainId = await base.getChainId().catch((e: unknown) => { throw new Error(`reading Base's chain id failed: ${safeErrorText(e)}`); });
       if (chainId !== FEE_CHAIN_ID) throw new Error(`publicClientFor(${FEE_CHAIN_ID}) returned a client on chain ${chainId}`);
-      const [balanceUsdcAtomic, permit2AllowanceUsdcAtomic] = await Promise.all([
-        base.readContract({ address: USDC_BASE as Hex, abi: ERC20_READ_ABI, functionName: "balanceOf", args: [owner] }),
-        base.readContract({ address: USDC_BASE as Hex, abi: ERC20_READ_ABI, functionName: "allowance", args: [owner, PERMIT2 as Hex] }),
-      ]);
-      return { balanceUsdcAtomic, permit2AllowanceUsdcAtomic };
+      try {
+        const [balanceUsdcAtomic, permit2AllowanceUsdcAtomic] = await Promise.all([
+          base.readContract({ address: USDC_BASE as Hex, abi: ERC20_READ_ABI, functionName: "balanceOf", args: [owner] }),
+          base.readContract({ address: USDC_BASE as Hex, abi: ERC20_READ_ABI, functionName: "allowance", args: [owner, PERMIT2 as Hex] }),
+        ]);
+        return { balanceUsdcAtomic, permit2AllowanceUsdcAtomic };
+      } catch (e) {
+        // viem's full message names the RPC URL, which may carry an API key: never pass it on (Fable M-2).
+        throw new Error(`reading USDC on Base failed: ${safeErrorText(e)}`);
+      }
     },
   };
 }

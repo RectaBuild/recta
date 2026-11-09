@@ -58,7 +58,7 @@ wallet's funds.
 | `recta_evaluate` | a request signature | Asks Recta whether a cheaper route than `baseline_provider` can be proven. Free. |
 | `recta_trial_evaluation` | nothing | The same question unsigned: only whether a saving exists, its amount and Recta's 5 %. No route, nothing stored, 3 a day per address. |
 | `recta_preview` | a request signature | Shows the fee ceiling Recta asks you to authorize, after the local permit check, and whether the wallet can pay it. With collection on, the transactions appear only after the permit is signed. |
-| `recta_fee_funds` | nothing | The wallet's USDC balance on Base and its USDC allowance to Permit2, against `RECTA_MAX_FEE_USDC`. |
+| `recta_fee_funds` | nothing | The wallet's USDC balance on Base and its USDC allowance to Permit2, against `amount_usdc` (default `RECTA_MAX_FEE_USDC`). |
 | `recta_approve_fee` | one approval | Sends `USDC.approve(Permit2, amount)` on Base, at most `RECTA_MAX_FEE_USDC`, never unlimited. Only with `RECTA_ALLOW_EXECUTE=yes`. |
 | `recta_execute` | fee permit, transactions | Signs the checked permit, sends the checked transactions, reports them. Only with `RECTA_ALLOW_EXECUTE=yes`. |
 | `recta_report` | a request signature | Reports an executed route again (after `PENDING`). |
@@ -70,7 +70,9 @@ wallet's funds.
 Recta's fee is paid in USDC on Base through Permit2, so the wallet needs USDC on Base and a USDC allowance to Permit2.
 `recta_execute` and `recta_pay_debt` read both first (through `RECTA_RPC_8453`, or Base's public RPC) and refuse before
 signing anything when either is below the permit: a route never executes with a fee Recta cannot collect. A new wallet
-fixes the allowance once with `recta_approve_fee`.
+sets the allowance with `recta_approve_fee`; each collected fee lowers it, so approve again when
+`recta_fee_funds` reports it short. A route that starts from USDC on Base needs the transfer plus the fee in the
+balance: the transfer leaves first, and `recta_execute` checks again right before sending.
 
 The saving is measured against `baseline_provider`: the route your agent would use without Recta. Declare the one it
 really uses. If your agent bridges through LI.FI (its public API or an aggregator built on it), declare `lifi`

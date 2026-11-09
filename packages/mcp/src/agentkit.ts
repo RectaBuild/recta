@@ -1,5 +1,5 @@
 import type { Hex } from "viem";
-import { pins, RectaCheckError, type RectaChainReader, type RectaSigner } from "@recta/client";
+import { ERC20_READ_ABI, pins, RectaCheckError, type RectaChainReader, type RectaSigner } from "@recta/client";
 import { networkChainIds } from "./index.js";
 import { rectaTools, type RectaTool, type RectaToolkitOptions } from "./tools.js";
 
@@ -27,11 +27,6 @@ export interface AgentKitEvmWalletLike {
     readContract?(args: { address: Hex; abi: unknown; functionName: string; args: readonly unknown[] }): Promise<unknown>;
   };
 }
-
-const FEE_READ_ABI = [
-  { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "owner", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "allowance", stateMutability: "view", inputs: [{ name: "owner", type: "address" }, { name: "spender", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-] as const;
 
 const AGENTKIT_TOOLS: ReadonlySet<string> = new Set(["recta_fit", "recta_trial_evaluation", "recta_evaluate", "recta_preview", "recta_report", "recta_ledger", "recta_fee_funds"]);
 
@@ -67,7 +62,7 @@ export function rectaActionProvider(options: Omit<RectaToolkitOptions, "allowExe
           const client = wallet.getPublicClient();
           if (walletChainId !== pins.FEE_CHAIN_ID || client.readContract === undefined) throw new RectaCheckError("fee_funds", "Recta's fee is paid in USDC on Base: this AgentKit wallet cannot read it there");
           const read = async (functionName: "balanceOf" | "allowance", args: readonly unknown[]) => {
-            const v = await client.readContract!({ address: pins.USDC_BASE as Hex, abi: FEE_READ_ABI, functionName, args });
+            const v = await client.readContract!({ address: pins.USDC_BASE as Hex, abi: ERC20_READ_ABI, functionName, args });
             if (typeof v !== "bigint") throw new RectaCheckError("fee_funds", `${functionName} did not return an integer`);
             return v;
           };
