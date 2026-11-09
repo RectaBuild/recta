@@ -3,6 +3,7 @@ import { checkExecutionArtifact, type CheckedArtifact, type EvaluationRequestVie
 import { ISSUED_AT_HEADER, PATHS, RECTA_ORIGIN, SIGNATURE_HEADER, SIGNED_REQUEST_PREFIX, SIGNER_HEADER, USER_AGENT } from "./constants.js";
 import { RectaCheckError, RectaDebtError, RectaHttpError } from "./errors.js";
 import { checkFeePermit } from "./fee.js";
+import { assertFeeReady, feeReadiness, permit2ApprovalTransaction, routeReserveOf, safeErrorText, type FeeReadiness, type Permit2Approval } from "./funds.js";
 import { parseWalletPolicy } from "./policy.js";
 import type { RectaChainReader, RectaSigner, RectaTypedData } from "./signer.js";
 
@@ -68,7 +69,7 @@ export type FeeOutcome =
   | { readonly kind: "NOT_REQUIRED" }
   | { readonly kind: "ALREADY_AUTHORIZED" }
   | { readonly kind: "AUTHORIZED"; readonly amountUsdcAtomic: bigint; readonly signature: Hex }
-  | { readonly kind: "DRY_RUN"; readonly amountUsdcAtomic: bigint; readonly typedData: RectaTypedData };
+  | { readonly kind: "DRY_RUN"; readonly amountUsdcAtomic: bigint; readonly typedData: RectaTypedData; readonly funds: FeeReadiness | null; readonly fundsError?: string };
 
 /**
  * Recta's flow for an agent that holds its own EOA: evaluate → authorizeFee → execute → report. Every step can be
@@ -82,6 +83,14 @@ export function createRectaClient(options: RectaClientOptions) {
   const nowUnix = (): bigint => BigInt(Math.floor(now() / 1000));
   const payer = signer.address.toLowerCase();
   const referral = referrerQuery(options.referrer, payer);
+  if (typeof (chain as Partial<RectaChainReader>).readFeeFunds !== "function") {
+    // Since 0.1.4 (ASTRA T2) a reader must read the fee funds on Base; an older custom reader fails here, clearly.
+    throw new RectaCheckError("chain_reader", "the chain reader has no readFeeFunds(owner): since @recta/client 0.1.4 it must read the payer's USDC balance and Permit2 allowance on Base (viemChainReader does)");
+  }
+  /** The fee permit amount of each decision this client saw authorized: execute() checks the funds against it again
+   *  right before the first transaction (Fable B-1/M-1 on recta #12). */
+  const feeAmounts = new Map<string, bigint>();
+  const parseAtomic = (v: unknown): bigint | undefined => (typeof v === "string" && /^(0|[1-9][0-9]{0,30})$/.test(v) ? BigInt(v) : undefined);
   let policyChecked = false;
 
   async function call(method: "GET" | "POST", path: string, body?: unknown, idempotencyKey?: string, signed = true): Promise<Answer> {
@@ -124,17 +133,31 @@ export function createRectaClient(options: RectaClientOptions) {
 
   /**
    * Step 2: the decision's committed transactions. With Recta's collection on, the artifact first asks for the fee
-   * permit: it is checked, rebuilt and signed only if it passes, then stored, and the answer carries the artifact. With
-   * `dryRun`, it stops before signing and returns the typed data it would sign.
+   * permit: it is checked, rebuilt, and signed only if it passes and the payer holds the permit's amount in USDC on
+   * Base with at least that allowance to Permit2 (otherwise RectaCheckError `fee_balance` / `fee_allowance`, nothing
+   * signed; see `feeApproval`); then it is stored and the answer carries the artifact. With `dryRun` and collection on,
+   * it stops at the permit, before the artifact exists, and returns the typed data it would sign and the payer's funds:
+   * the transactions can only be inspected after the permit is signed. Pass the evaluation's `request` so a route that
+   * starts from USDC on Base reserves its own amount from the balance; `execute` checks the funds again either way.
    */
-  async function authorizeFee(resultId: string, opts: { readonly dryRun?: boolean } = {}): Promise<{ readonly fee: FeeOutcome; readonly artifact: unknown }> {
+  async function authorizeFee(resultId: string, opts: { readonly dryRun?: boolean; readonly request?: EvaluationRequestView } = {}): Promise<{ readonly fee: FeeOutcome; readonly artifact: unknown }> {
     const id = resultIdOf(resultId);
     const artifactPath = `${PATHS.evaluations}/${id}/execution-artifact`;
+    const reserve = opts.request === undefined ? 0n : routeReserveOf(opts.request);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const a = await call("GET", artifactPath);
       if (a.status === 200) {
-        const authorized = field(field(a.body, "fee_authorization"), "status") === "AUTHORIZED";
-        return { fee: { kind: authorized ? "ALREADY_AUTHORIZED" : "NOT_REQUIRED" }, artifact: field(a.body, "artifact") };
+        const fa = field(a.body, "fee_authorization");
+        if (field(fa, "status") === "AUTHORIZED") {
+          // A permit stored earlier: its amount is the stored cap plus what it carries; the funds are checked again
+          // before execute() sends anything.
+          const cap = parseAtomic(field(fa, "max_fee_authorization_usdc_atomic"));
+          const carried = parseAtomic(field(fa, "carried_usdc_atomic"));
+          if (cap === undefined || carried === undefined) throw new RectaCheckError("fee_amount", "the stored fee authorization has no readable amount");
+          feeAmounts.set(id, cap + carried);
+          return { fee: { kind: "ALREADY_AUTHORIZED" }, artifact: field(a.body, "artifact") };
+        }
+        return { fee: { kind: "NOT_REQUIRED" }, artifact: field(a.body, "artifact") };
       }
       if (a.status !== 402 || field(a.body, "status") !== "SIGNATURE_REQUIRED") throw new RectaHttpError(a.status, a.body);
       const expiry = field(a.body, "commercial_expiry_unix");
@@ -144,9 +167,18 @@ export function createRectaClient(options: RectaClientOptions) {
         nowUnix: nowUnix(),
         ...(typeof expiry === "string" && /^[0-9]+$/.test(expiry) ? { commercialExpiryUnix: BigInt(expiry) } : {}),
       });
-      if (opts.dryRun === true) return { fee: { kind: "DRY_RUN", amountUsdcAtomic: checked.amount, typedData: checked.typedData }, artifact: undefined };
+      if (opts.dryRun === true) {
+        // A preview reports the funds; a reader that cannot read Base yields `funds: null` and the reason, never a signature.
+        let funds: FeeReadiness | null = null;
+        let fundsError: string | undefined;
+        try { funds = feeReadiness(await chain.readFeeFunds(signer.address), checked.amount, reserve); } catch (e) { fundsError = safeErrorText(e); }
+        return { fee: { kind: "DRY_RUN", amountUsdcAtomic: checked.amount, typedData: checked.typedData, funds, ...(fundsError === undefined ? {} : { fundsError }) }, artifact: undefined };
+      }
+      // ASTRA T2: never sign a fee Recta could not collect (no USDC or no Permit2 allowance on Base).
+      assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), checked.amount, reserve));
       const signature = await signer.signTypedData(checked.typedData);
       const s = await call("POST", `${PATHS.evaluations}/${id}/fee-authorization${referral}`, { signature, amount_usdc_atomic: checked.amount.toString() });
+      if (s.status === 200 || s.status === 201) feeAmounts.set(id, checked.amount);
       if (s.status === 200 || s.status === 201) return { fee: { kind: "AUTHORIZED", amountUsdcAtomic: checked.amount, signature }, artifact: field(s.body, "artifact") };
       if (!(s.status === 409 && field(s.body, "reason_code") === "OFFER_STALE")) throw new RectaHttpError(s.status, s.body);
     }
@@ -161,6 +193,10 @@ export function createRectaClient(options: RectaClientOptions) {
 
   /** Step 3: checks, then sends the transactions in order, each mined successfully before the next. */
   async function execute(resultId: string, artifact: unknown, request: EvaluationRequestView): Promise<{ readonly approvalTxHash?: Hex; readonly originTxHash: Hex }> {
+    // The last moment before anything is sent: with a fee authorized for this decision, the payer must still hold it
+    // in USDC on Base (plus the transfer itself when it starts from Base USDC) with the Permit2 allowance for it.
+    const fee = feeAmounts.get(resultIdOf(resultId));
+    if (fee !== undefined) assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), fee, routeReserveOf(request)));
     const checked = await check(resultId, artifact, request);
     let approvalTxHash: Hex | undefined;
     for (const tx of checked.transactions) {
@@ -199,6 +235,7 @@ export function createRectaClient(options: RectaClientOptions) {
     const checked = checkFeePermit(offer, { payer, maxPermitUsdcAtomic: limits.maxPermitUsdcAtomic, nowUnix: nowUnix() }, "DEBT");
     const debtId = field(offer, "debt_id");
     if (typeof debtId !== "string") throw new RectaCheckError("debt", "the offer has no debt_id");
+    assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), checked.amount));
     const signature = await signer.signTypedData(checked.typedData);
     const a = await call("POST", PATHS.feeDebts, { debt_id: debtId, deadline_unix: checked.deadline.toString(), signature });
     if (a.status !== 200 && a.status !== 201) throw new RectaHttpError(a.status, a.body);
@@ -213,14 +250,29 @@ export function createRectaClient(options: RectaClientOptions) {
     const decision = await evaluate(request, opts.idempotencyKey === undefined ? {} : { idempotencyKey: opts.idempotencyKey });
     const resultId = field(decision, "result_id");
     if (field(field(decision, "decision"), "state") !== "VERIFIED_POSITIVE" || typeof resultId !== "string") return { stage: "NO_ROUTE" as const, decision };
-    const { fee, artifact } = await authorizeFee(resultId, opts.dryRun === true ? { dryRun: true } : {});
+    const { fee, artifact } = await authorizeFee(resultId, opts.dryRun === true ? { dryRun: true, request } : { request });
     if (fee.kind === "DRY_RUN") return { stage: "DRY_RUN" as const, decision, fee };
     if (opts.dryRun === true) return { stage: "DRY_RUN" as const, decision, fee, checked: await check(resultId, artifact, request) };
     const sent = await execute(resultId, artifact, request);
     return { stage: "REPORTED" as const, decision, fee, ...sent, report: await report(resultId, sent.originTxHash, sent.approvalTxHash) };
   }
 
-  return { evaluate, authorizeFee, check, execute, report, ledger, payDebt, run, walletPolicy };
+  /** The payer's USDC balance and Permit2 allowance on Base against an amount (default: this client's permit limit). */
+  async function feeFunds(requiredUsdcAtomic: bigint = limits.maxPermitUsdcAtomic): Promise<FeeReadiness> {
+    return feeReadiness(await chain.readFeeFunds(signer.address), requiredUsdcAtomic);
+  }
+
+  /**
+   * The bounded approval `USDC.approve(Permit2, amount)` on Base, for the operator to send (`sendTransaction` is not
+   * called here: this client never approves by itself). The amount defaults to, and may not exceed, this client's
+   * permit limit, so the allowance never reaches past what one permit may authorize.
+   */
+  function feeApproval(amountUsdcAtomic: bigint = limits.maxPermitUsdcAtomic): Permit2Approval {
+    if (amountUsdcAtomic > limits.maxPermitUsdcAtomic) throw new RectaCheckError("fee_approval", `the approval ${amountUsdcAtomic} exceeds your permit limit ${limits.maxPermitUsdcAtomic}`);
+    return permit2ApprovalTransaction(amountUsdcAtomic);
+  }
+
+  return { evaluate, authorizeFee, check, execute, report, ledger, payDebt, run, walletPolicy, feeFunds, feeApproval };
 }
 
 export type RectaClient = ReturnType<typeof createRectaClient>;

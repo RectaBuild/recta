@@ -1,5 +1,7 @@
 import type { Account, Chain, Hex, PublicClient, Transport, TransactionSerializable, WalletClient } from "viem";
 import { toAccount } from "viem/accounts";
+import { FEE_CHAIN_ID, PERMIT2, USDC_BASE } from "./constants.js";
+import { ERC20_READ_ABI, safeErrorText, type FeeFunds } from "./funds.js";
 
 /** One EIP-1559 transaction of an execution artifact, as this package asks a signer to send it. */
 export interface RectaTransaction {
@@ -32,10 +34,16 @@ export interface RectaSigner {
   sendTransaction(tx: RectaTransaction): Promise<Hex>;
 }
 
-/** Read access to the source chain (the agent's own RPC): receipts. */
+/** Read access to the chains (the agent's own RPC): receipts, and the payer's USDC on Base before a fee is signed. */
 export interface RectaChainReader {
   /** Waits until the transaction is mined and returns whether it succeeded. */
   waitForSuccess(chainId: number, hash: Hex): Promise<boolean>;
+  /**
+   * The payer's USDC balance on Base and its ERC-20 allowance to Permit2 (ASTRA T2): read before every fee or debt
+   * permit is signed, which is refused when either is below the permit's amount. A reader that cannot answer (no Base
+   * RPC) must throw: the permit is then not signed.
+   */
+  readFeeFunds(owner: Hex): Promise<FeeFunds>;
 }
 
 /** A RectaSigner from a viem account and one wallet client per chain. */
@@ -143,9 +151,24 @@ export function cdpSigner(args: {
   };
 }
 
-/** A RectaChainReader from one viem public client per chain. */
+/** A RectaChainReader from one viem public client per chain (`publicClientFor(8453)` reads the fee funds on Base). */
 export function viemChainReader(publicClientFor: (chainId: number) => PublicClient): RectaChainReader {
   return {
     waitForSuccess: async (chainId, hash) => (await publicClientFor(chainId).waitForTransactionReceipt({ hash })).status === "success",
+    readFeeFunds: async (owner) => {
+      const base = publicClientFor(FEE_CHAIN_ID);
+      const chainId = await base.getChainId().catch((e: unknown) => { throw new Error(`reading Base's chain id failed: ${safeErrorText(e)}`); });
+      if (chainId !== FEE_CHAIN_ID) throw new Error(`publicClientFor(${FEE_CHAIN_ID}) returned a client on chain ${chainId}`);
+      try {
+        const [balanceUsdcAtomic, permit2AllowanceUsdcAtomic] = await Promise.all([
+          base.readContract({ address: USDC_BASE as Hex, abi: ERC20_READ_ABI, functionName: "balanceOf", args: [owner] }),
+          base.readContract({ address: USDC_BASE as Hex, abi: ERC20_READ_ABI, functionName: "allowance", args: [owner, PERMIT2 as Hex] }),
+        ]);
+        return { balanceUsdcAtomic, permit2AllowanceUsdcAtomic };
+      } catch (e) {
+        // viem's full message names the RPC URL, which may carry an API key: never pass it on (Fable M-2).
+        throw new Error(`reading USDC on Base failed: ${safeErrorText(e)}`);
+      }
+    },
   };
 }

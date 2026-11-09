@@ -40,7 +40,7 @@ jobs:
           if echo "$out" | grep -q '"recta_execute"'; then echo "execution tools listed without RECTA_ALLOW_EXECUTE"; exit 1; fi
       - name: AgentKit and GOAT adapters
         working-directory: packages/mcp
-        run: node --test test/toolkits.test.mjs
+        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs
       - name: Package contents
         working-directory: packages/mcp
         run: npm pack --dry-run

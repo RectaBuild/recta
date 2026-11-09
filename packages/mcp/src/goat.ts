@@ -24,9 +24,12 @@ export interface RectaGoatOptions extends Omit<RectaToolkitOptions, "allowExecut
   /** The source chain's fee estimate (e.g. a viem public client's `estimateFeesPerGas`). Without it, an evaluation
    *  commits to the ceilings themselves (`maxFeePerGasWei`, `maxPriorityFeePerGasWei`). */
   readonly estimateFeesPerGas?: (chainId: number) => Promise<{ readonly maxFeePerGas: bigint; readonly maxPriorityFeePerGas: bigint }>;
+  /** The wallet's USDC balance and allowance to Permit2 on Base (e.g. `viemChainReader(...).readFeeFunds`), shown by
+   *  recta_fee_funds and recta_preview. Without it they say the funds were not checked. */
+  readonly readFeeFunds?: RectaChainReader["readFeeFunds"];
 }
 
-const GOAT_TOOLS: ReadonlySet<string> = new Set(["recta_fit", "recta_trial_evaluation", "recta_evaluate", "recta_preview", "recta_report", "recta_ledger"]);
+const GOAT_TOOLS: ReadonlySet<string> = new Set(["recta_fit", "recta_trial_evaluation", "recta_evaluate", "recta_preview", "recta_report", "recta_ledger", "recta_fee_funds"]);
 const GWEI = 1_000_000_000n;
 
 export function recta(options: RectaGoatOptions) {
@@ -51,6 +54,10 @@ export function recta(options: RectaGoatOptions) {
       const chain: RectaChainReader = {
         waitForSuccess: async () => {
           throw new RectaCheckError("execution_disabled", "the GOAT plugin never sends");
+        },
+        readFeeFunds: async (owner) => {
+          if (options.readFeeFunds === undefined) throw new RectaCheckError("fee_funds", "give recta({ readFeeFunds }) a Base reader to check the fee funds");
+          return options.readFeeFunds(owner);
         },
       };
       const tools = rectaTools(

@@ -57,13 +57,22 @@ wallet's funds.
 | `recta_fit` | nothing | Does Recta cover this corridor, and which contracts would a route touch? |
 | `recta_evaluate` | a request signature | Asks Recta whether a cheaper route than `baseline_provider` can be proven. Free. |
 | `recta_trial_evaluation` | nothing | The same question unsigned: only whether a saving exists, its amount and Recta's 5 %. No route, nothing stored, 3 a day per address. |
-| `recta_preview` | a request signature | Shows the fee ceiling Recta asks you to authorize, after the local permit check. |
+| `recta_preview` | a request signature | Shows the fee ceiling Recta asks you to authorize, after the local permit check, and whether the wallet can pay it. With collection on, the transactions appear only after the permit is signed. |
+| `recta_fee_funds` | nothing | The wallet's USDC balance on Base and its USDC allowance to Permit2, against `amount_usdc` (default `RECTA_MAX_FEE_USDC`). |
+| `recta_approve_fee` | one approval | Sends `USDC.approve(Permit2, amount)` on Base, at most `RECTA_MAX_FEE_USDC`, never unlimited. Only with `RECTA_ALLOW_EXECUTE=yes`. |
 | `recta_execute` | fee permit, transactions | Signs the checked permit, sends the checked transactions, reports them. Only with `RECTA_ALLOW_EXECUTE=yes`. |
 | `recta_report` | a request signature | Reports an executed route again (after `PENDING`). |
 | `recta_pay_debt` | a debt permit | Pays an earlier fee Recta could not collect. Only with `RECTA_ALLOW_EXECUTE=yes`. |
 | `recta_ledger` | a request signature | The wallet's Recta fees and whether each was collected. |
 
-`recta_execute` and `recta_pay_debt` are not even listed to the agent unless execution is enabled.
+`recta_execute`, `recta_pay_debt` and `recta_approve_fee` are not even listed to the agent unless execution is enabled.
+
+Recta's fee is paid in USDC on Base through Permit2, so the wallet needs USDC on Base and a USDC allowance to Permit2.
+`recta_execute` and `recta_pay_debt` read both first (through `RECTA_RPC_8453`, or Base's public RPC) and refuse before
+signing anything when either is below the permit: a route never executes with a fee Recta cannot collect. A new wallet
+sets the allowance with `recta_approve_fee`; each collected fee lowers it, so approve again when
+`recta_fee_funds` reports it short. A route that starts from USDC on Base needs the transfer plus the fee in the
+balance: the transfer leaves first, and `recta_execute` checks again right before sending.
 
 The saving is measured against `baseline_provider`: the route your agent would use without Recta. Declare the one it
 really uses. If your agent bridges through LI.FI (its public API or an aggregator built on it), declare `lifi`
@@ -73,7 +82,7 @@ wherever the fit check (`GET /v1/golden-corridor/fit`) lists it in `declarable_b
 ## Coinbase AgentKit
 
 The evaluation tools as AgentKit actions (`recta_fit`, `recta_trial_evaluation`, `recta_evaluate`, `recta_preview`,
-`recta_report`, `recta_ledger`), signed by the agent's own AgentKit EVM wallet provider:
+`recta_report`, `recta_ledger`, `recta_fee_funds`), signed by the agent's own AgentKit EVM wallet provider:
 
 ```ts
 import { AgentKit } from "@coinbase/agentkit";
@@ -88,7 +97,8 @@ const agentkit = await AgentKit.from({
 The provider never sends a transaction: AgentKit's wallet providers replace a transaction's gas limit and fee caps
 with their own, and Recta's route is committed to exact ones. Preview the route there and send it with
 `@recta/client` or this server. An AgentKit wallet provider lives on one chain, so an evaluation for a route that
-starts on another chain is refused. It needs `zod`, which AgentKit already installs.
+starts on another chain is refused. `recta_fee_funds` reads the fee funds only when the wallet provider is on Base. It
+needs `zod`, which AgentKit already installs.
 
 ## GOAT
 
@@ -100,7 +110,7 @@ import { recta } from "@recta/mcp/goat";
 
 const tools = await getOnChainTools({
   wallet: viem(walletClient),
-  plugins: [recta({ limits: { maxPermitUsdcAtomic: 1_000_000n, maxNativeValueWei: 0n, minOutputBps: 9900 }, referrer: "0x…" /* optional */, estimateFeesPerGas: () => publicClient.estimateFeesPerGas() })],
+  plugins: [recta({ limits: { maxPermitUsdcAtomic: 1_000_000n, maxNativeValueWei: 0n, minOutputBps: 9900 }, referrer: "0x…" /* optional */, estimateFeesPerGas: () => publicClient.estimateFeesPerGas(), readFeeFunds: viemChainReader(() => basePublicClient).readFeeFunds /* optional: shows the fee funds */ })],
 });
 ```
 
