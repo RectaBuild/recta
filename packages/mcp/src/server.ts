@@ -6,7 +6,7 @@ import { createRectaClient, safeErrorText, RectaCheckError, RectaDebtError, Rect
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.6" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.7" } as const;
 /** Sent on every request this package makes (its own and the client's), so Recta can count real use of it apart from
  *  other clients (no address, no key). */
 export const MCP_USER_AGENT = `recta-mcp/${SERVER_INFO.version}`;
@@ -29,6 +29,11 @@ export interface LocalServerOptions {
   readonly limits: { readonly maxPermitUsdcAtomic: bigint; readonly maxNativeValueWei: bigint; readonly minOutputBps: number };
   /** Off by default: without it the server evaluates and previews, but never signs a fee permit or sends a transaction. */
   readonly allowExecute: boolean;
+  /**
+   * No key (ASTRA T5): the server lists and answers only the tools that sign nothing, `recta_fit` and
+   * `recta_trial_evaluation`; `signer` then only names an address (RECTA_ADDRESS, or none) and must never be asked to sign.
+   */
+  readonly keyless?: boolean;
   /** Gas caps for a source chain when the tool call gives none: `[maxFeePerGasWei, maxPriorityFeePerGasWei]`. */
   readonly gasCapsFor: (network: string) => Promise<readonly [bigint, bigint]>;
   /** Who referred this agent (OD-REF-1): see `RectaClientOptions.referrer`. Usually set by the integration's author. */
@@ -59,6 +64,15 @@ const EVALUATE_INPUT = {
   additionalProperties: false,
 } as const;
 
+/** The trial's arguments: the evaluation's, plus the sender, which a keyless server cannot take from a key. */
+const TRIAL_INPUT = {
+  ...EVALUATE_INPUT,
+  properties: {
+    ...EVALUATE_INPUT.properties,
+    sender: { type: "string", description: "Only when the server runs without a key: the EVM address the transfer would leave from (0x + 40 hex), else RECTA_ADDRESS. With a key it is ignored: the sender is the local wallet." },
+  },
+} as const;
+
 export const TOOLS = [
   {
     name: "recta_fit",
@@ -72,8 +86,8 @@ export const TOOLS = [
   },
   {
     name: "recta_trial_evaluation",
-    description: "Free, unsigned and stored nowhere: the same question as recta_evaluate with the same arguments, answered only with whether a cheaper provable route exists, the saving (lower bound, USDC) and Recta's 5 % of it. Names no route and returns no result_id; 3 a day per address. Use it to see whether Recta is worth a signature.",
-    inputSchema: EVALUATE_INPUT,
+    description: "Free, unsigned and stored nowhere: the same question as recta_evaluate with the same arguments, answered only with whether a cheaper provable route exists, the saving (lower bound, USDC) and Recta's 5 % of it. Names no route and returns no result_id; 3 a day per address. Use it to see whether Recta is worth a signature. Works without a key (give sender, or set RECTA_ADDRESS).",
+    inputSchema: TRIAL_INPUT,
   },
   {
     name: "recta_preview",
@@ -115,6 +129,10 @@ export const TOOLS = [
 /** The unsigned trial (api.recta.build, BIT-OPS-079). */
 export const TRIAL_EVALUATION_PATH = "/v1/golden-corridor/trial-evaluation";
 const EXECUTING_TOOLS: ReadonlySet<string> = new Set(["recta_execute", "recta_pay_debt", "recta_approve_fee"]);
+/** The tools a server without a key offers: they sign nothing. */
+export const KEYLESS_TOOLS: ReadonlySet<string> = new Set(["recta_fit", "recta_trial_evaluation"]);
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const USDC_AMOUNT = /^\d+(\.\d{1,6})?$/;
 /** Gas limit of USDC.approve on Base (≈ 56 000 when the allowance goes from zero), with margin. */
 const APPROVE_GAS = 80_000n;
@@ -148,7 +166,12 @@ export function createLocalServer(options: LocalServerOptions) {
   };
 
   /** The evaluation request for the local wallet, as recta_evaluate signs it and recta_trial_evaluation sends it unsigned. */
-  async function evaluationRequestOf(args: Json) {
+  async function evaluationRequestOf(args: Json, trial = false) {
+    // Only a server without a key takes the trial's sender; with a key the sender is always the wallet (Fable L-1 on #13).
+    const given = trial && options.keyless === true ? opt(args, "sender") : undefined;
+    if (given !== undefined && !ADDRESS.test(given)) throw new RectaCheckError("input", "sender must be an EVM address, 0x + 40 hex characters");
+    const sender = given ?? options.signer.address;
+    if (sender.toLowerCase() === ZERO_ADDRESS) throw new RectaCheckError("sender", "no sender: pass sender, or set RECTA_ADDRESS (a public address, never a key)");
     const source = str(args, "source_network");
     const [maxFee, priority] = await options.gasCapsFor(source);
     return {
@@ -160,14 +183,15 @@ export function createLocalServer(options: LocalServerOptions) {
       amount: str(args, "amount"),
       // The client executes only the source side: no destination transaction is ever committed to.
       constraints: { guarantee_class: opt(args, "guarantee_class") ?? "ANY", latency_class: opt(args, "latency_class") ?? "ANY", destination_execution: "NONE" },
-      sender: options.signer.address,
-      recipient: opt(args, "recipient") ?? options.signer.address,
+      sender,
+      recipient: opt(args, "recipient") ?? sender,
       baseline_provider: str(args, "baseline_provider"),
       execution_authority: { headroom: "0.2", source_max_fee_per_gas_wei: maxFee.toString(), source_max_priority_fee_per_gas_wei: priority.toString() },
     };
   }
 
   async function call(name: string, args: Json): Promise<unknown> {
+    if (options.keyless === true && !KEYLESS_TOOLS.has(name)) throw new RectaCheckError("no_key", `${name} needs the wallet's key: set RECTA_PRIVATE_KEY (a dedicated wallet); without it only recta_fit and recta_trial_evaluation run`);
     switch (name) {
       case "recta_fit": {
         const q = new URLSearchParams({ source_network: str(args, "source_network"), source_asset: str(args, "source_asset"), destination_network: str(args, "destination_network"), destination_asset: opt(args, "destination_asset") ?? str(args, "source_asset") });
@@ -182,7 +206,7 @@ export function createLocalServer(options: LocalServerOptions) {
         return decision;
       }
       case "recta_trial_evaluation": {
-        const r = await doFetch(`${pins.RECTA_ORIGIN}${TRIAL_EVALUATION_PATH}`, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(await evaluationRequestOf(args)) });
+        const r = await doFetch(`${pins.RECTA_ORIGIN}${TRIAL_EVALUATION_PATH}`, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(await evaluationRequestOf(args, true)) });
         const text = await r.text();
         try { return JSON.parse(text) as unknown; } catch { return { status: r.status, body: text }; }
       }
@@ -260,12 +284,14 @@ export function createLocalServer(options: LocalServerOptions) {
       case "initialize": {
         const requested = params["protocolVersion"];
         const protocolVersion = typeof requested === "string" && (MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : MCP_PROTOCOL_VERSIONS[0];
-        return ok({ protocolVersion, capabilities: { tools: {} }, serverInfo: SERVER_INFO, instructions: "Before a cross-chain stablecoin transfer, call recta_evaluate with the route you would use anyway (baseline_provider). Use Recta's route only when it proves a saving; otherwise keep yours and nothing is owed." });
+        return ok({ protocolVersion, capabilities: { tools: {} }, serverInfo: SERVER_INFO, instructions: options.keyless === true
+          ? "Running without a key: recta_fit says whether Recta covers a corridor, and recta_trial_evaluation, unsigned, whether a cheaper provable route exists for a transfer you would make anyway (baseline_provider). To get the route, the operator sets RECTA_PRIVATE_KEY of a dedicated wallet."
+          : "Before a cross-chain stablecoin transfer, call recta_evaluate with the route you would use anyway (baseline_provider). Use Recta's route only when it proves a saving; otherwise keep yours and nothing is owed." });
       }
       case "ping":
         return ok({});
       case "tools/list":
-        return ok({ tools: TOOLS.filter((t) => options.allowExecute || !EXECUTING_TOOLS.has(t.name)) });
+        return ok({ tools: TOOLS.filter((t) => (options.keyless === true ? KEYLESS_TOOLS.has(t.name) : options.allowExecute || !EXECUTING_TOOLS.has(t.name))) });
       case "tools/call": {
         const name = params["name"];
         const args = (typeof params["arguments"] === "object" && params["arguments"] !== null ? params["arguments"] : {}) as Json;

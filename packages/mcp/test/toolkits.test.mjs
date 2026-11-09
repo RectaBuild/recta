@@ -48,7 +48,10 @@ test("the local MCP server lists the unsigned trial with the evaluation's argume
   const trial = TOOLS.find((t) => t.name === "recta_trial_evaluation");
   const evaluate = TOOLS.find((t) => t.name === "recta_evaluate");
   assert.ok(trial);
-  assert.deepEqual(trial.inputSchema, evaluate.inputSchema);
+  // The trial takes the evaluation's arguments, plus an optional sender for a server without a key (ASTRA T5).
+  assert.deepEqual({ ...trial.inputSchema.properties, sender: undefined }, { ...evaluate.inputSchema.properties, sender: undefined });
+  assert.deepEqual(trial.inputSchema.required, evaluate.inputSchema.required);
+  assert.ok(!trial.inputSchema.required.includes("sender"));
 });
 
 test("AgentKit: read-only actions by default, a signed evaluation from the wallet, the trial unsigned", async () => {

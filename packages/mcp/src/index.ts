@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { createPublicClient, createWalletClient, http, type Chain, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import * as chains from "viem/chains";
-import { PINNED_ROUTES, viemChainReader, viemSigner } from "@recta/client";
+import { PINNED_ROUTES, RectaCheckError, viemChainReader, viemSigner, type RectaSigner } from "@recta/client";
 import { createLocalServer } from "./server.js";
 
 export { createLocalServer, TOOLS, MCP_PROTOCOL_VERSIONS, SERVER_INFO, type LocalServerOptions } from "./server.js";
@@ -15,7 +15,10 @@ export function networkChainIds(): Map<string, number> {
 }
 
 export interface EnvConfig {
-  readonly privateKey: Hex;
+  /** Absent: the server runs without a key and offers only recta_fit and recta_trial_evaluation (ASTRA T5). */
+  readonly privateKey?: Hex;
+  /** RECTA_ADDRESS: a public address the keyless trial uses as sender (never a key). */
+  readonly address?: Hex;
   readonly rpcUrls: Readonly<Record<number, string>>;
   readonly maxPermitUsdcAtomic: bigint;
   readonly maxNativeValueWei: bigint;
@@ -48,8 +51,12 @@ export function cappedGas(estimate: { readonly maxFeePerGas: bigint; readonly ma
 
 /** Reads the operator's configuration. Every limit has a conservative default; execution is off unless asked for. */
 export function configFromEnv(env: Readonly<Record<string, string | undefined>>): EnvConfig {
-  const key = env["RECTA_PRIVATE_KEY"];
-  if (key === undefined || !/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("RECTA_PRIVATE_KEY must be set to the agent wallet's 0x-prefixed private key (use a dedicated wallet holding only what the agent may move)");
+  const rawKey = env["RECTA_PRIVATE_KEY"];
+  const key = rawKey === undefined || rawKey === "" ? undefined : rawKey;
+  if (key !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("RECTA_PRIVATE_KEY must be the agent wallet's 0x-prefixed private key (use a dedicated wallet holding only what the agent may move), or unset to run only the free tools");
+  const rawAddress = env["RECTA_ADDRESS"];
+  const address = rawAddress === undefined || rawAddress === "" ? undefined : rawAddress;
+  if (address !== undefined && !/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("RECTA_ADDRESS must be a 0x-prefixed EVM address (public, never a key)");
   const rpcUrls: Record<number, string> = {};
   for (const [k, v] of Object.entries(env)) {
     const m = /^RECTA_RPC_(\d+)$/.exec(k);
@@ -67,12 +74,14 @@ export function configFromEnv(env: Readonly<Record<string, string | undefined>>)
   const bps = Number(env["RECTA_MIN_OUTPUT_BPS"] ?? "9900");
   if (!Number.isInteger(bps) || bps < 1 || bps > 10_000) throw new Error("RECTA_MIN_OUTPUT_BPS must be an integer from 1 to 10000");
   return {
-    privateKey: key as Hex,
+    ...(key === undefined ? {} : { privateKey: key as Hex }),
+    ...(address === undefined ? {} : { address: address as Hex }),
     rpcUrls,
     maxPermitUsdcAtomic: BigInt(whole!) * 1_000_000n + BigInt(frac.padEnd(6, "0")),
     maxNativeValueWei: BigInt(native),
     minOutputBps: bps,
-    allowExecute: env["RECTA_ALLOW_EXECUTE"] === "yes",
+    // Without a key nothing can be signed or sent, whatever RECTA_ALLOW_EXECUTE says.
+    allowExecute: key !== undefined && env["RECTA_ALLOW_EXECUTE"] === "yes",
     maxFeePerGasWei: gweiToWei(env["RECTA_MAX_FEE_GWEI"] ?? "50", "RECTA_MAX_FEE_GWEI"),
     maxPriorityFeePerGasWei: gweiToWei(env["RECTA_MAX_PRIORITY_FEE_GWEI"] ?? "2", "RECTA_MAX_PRIORITY_FEE_GWEI"),
     ...(referrer === undefined || referrer === "" ? {} : { referrer }),
@@ -98,13 +107,23 @@ function chainOf(id: number): Chain {
   return chain;
 }
 
+/** A signer that only names an address and refuses to sign or send: the keyless server never asks it to. */
+export function keylessSigner(address: Hex | undefined): RectaSigner {
+  const refuse = async (): Promise<never> => {
+    throw new RectaCheckError("no_key", "no key: set RECTA_PRIVATE_KEY to sign");
+  };
+  return { address: address ?? "0x0000000000000000000000000000000000000000", signMessage: refuse, signTypedData: refuse, sendTransaction: refuse };
+}
+
 export async function main(): Promise<void> {
   const config = configFromEnv(process.env);
-  const account = privateKeyToAccount(config.privateKey);
   const transport = (id: number) => http(config.rpcUrls[id]);
   const ids = networkChainIds();
+  const account = config.privateKey === undefined ? undefined : privateKeyToAccount(config.privateKey);
+  if (account === undefined) process.stderr.write("recta-mcp: no RECTA_PRIVATE_KEY, running the free tools only (recta_fit, recta_trial_evaluation)\n");
   const server = createLocalServer({
-    signer: viemSigner({ account, walletClientFor: (id) => createWalletClient({ account, chain: chainOf(id), transport: transport(id) }) }),
+    signer: account === undefined ? keylessSigner(config.address) : viemSigner({ account, walletClientFor: (id) => createWalletClient({ account, chain: chainOf(id), transport: transport(id) }) }),
+    keyless: account === undefined,
     chain: viemChainReader((id) => createPublicClient({ chain: chainOf(id), transport: transport(id) })),
     limits: { maxPermitUsdcAtomic: config.maxPermitUsdcAtomic, maxNativeValueWei: config.maxNativeValueWei, minOutputBps: config.minOutputBps },
     allowExecute: config.allowExecute,

@@ -1,11 +1,9 @@
 name: MCP package CI
 
+# Run by baseline.yml ("Baseline checks", the status check main's ruleset requires) on every pull request and
+# every push to main, so a path filter can never leave that check missing.
 on:
-  pull_request:
-    paths: ["packages/mcp/**", "packages/client/**", ".github/workflows/mcp-*.yml"]
-  push:
-    branches: [main]
-    paths: ["packages/mcp/**", "packages/client/**", ".github/workflows/mcp-*.yml"]
+  workflow_call:
 
 permissions:
   contents: read
@@ -38,9 +36,15 @@ jobs:
           echo "$out" | grep -q '"recta_evaluate"'
           echo "$out" | grep -q '"recta_trial_evaluation"'
           if echo "$out" | grep -q '"recta_execute"'; then echo "execution tools listed without RECTA_ALLOW_EXECUTE"; exit 1; fi
+          # ASTRA T5: without a key the server starts and lists only the free tools.
+          free=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"recta_ledger","arguments":{}}}' | node dist/cli.js)
+          echo "$free"
+          names=$(echo "$free" | head -1 | grep -o '"name":"recta_[a-z_]*"' | sort | tr '\n' ' ')
+          [ "$names" = '"name":"recta_fit" "name":"recta_trial_evaluation" ' ] || { echo "keyless tools/list is not exactly fit + trial: $names"; exit 1; }
+          echo "$free" | tail -1 | grep -q 'no_key' || { echo "a signing tool was not refused without a key"; exit 1; }
       - name: AgentKit and GOAT adapters
         working-directory: packages/mcp
-        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs
+        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs
       - name: Package contents
         working-directory: packages/mcp
         run: npm pack --dry-run
