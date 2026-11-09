@@ -32,6 +32,11 @@ Example for an MCP client configuration file (Claude Desktop, Cursor and others 
 }
 ```
 
+**Try it first without a key.** Leave `RECTA_PRIVATE_KEY` out and the server offers only the two tools that sign
+nothing: `recta_fit` (is the corridor covered?) and `recta_trial_evaluation` (is there a provable saving for this
+transfer, and how much?). Give the trial a `sender`, or set `RECTA_ADDRESS` to the public address the transfer would
+leave from. Add the key when you want the route itself.
+
 Use a **dedicated wallet** that holds only what the agent may move, never your main one. The key sits in plain text in
 that configuration file (and in the environment of the server process), so anyone who can read the file can move the
 wallet's funds.
@@ -40,7 +45,8 @@ wallet's funds.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `RECTA_PRIVATE_KEY` | required | The agent wallet's private key (EOA). It is only used locally, to sign. |
+| `RECTA_PRIVATE_KEY` | none: free tools only | The agent wallet's private key (EOA). It is only used locally, to sign. Without it only `recta_fit` and `recta_trial_evaluation` are offered. |
+| `RECTA_ADDRESS` | none | A public address the keyless trial uses as `sender` (never a key). Ignored with a key: the key's address is the sender. |
 | `RECTA_RPC_<chainId>` | the chain's public RPC | An `https` RPC URL for that chain, e.g. `RECTA_RPC_8453` for Base. `http` is accepted only for `localhost`; any other value stops the server. |
 | `RECTA_ALLOW_EXECUTE` | off | Set to `yes` to let the agent sign fee permits and send transactions. Anything else keeps the server read and preview only. |
 | `RECTA_MAX_FEE_USDC` | `1` | The most one fee permit may authorize, in USDC. A larger permit is refused. |

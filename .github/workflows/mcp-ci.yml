@@ -38,9 +38,14 @@ jobs:
           echo "$out" | grep -q '"recta_evaluate"'
           echo "$out" | grep -q '"recta_trial_evaluation"'
           if echo "$out" | grep -q '"recta_execute"'; then echo "execution tools listed without RECTA_ALLOW_EXECUTE"; exit 1; fi
+          # ASTRA T5: without a key the server starts and lists only the free tools.
+          free=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/cli.js)
+          echo "$free"
+          echo "$free" | grep -q '"recta_trial_evaluation"'
+          if echo "$free" | grep -q '"recta_evaluate"'; then echo "signing tools listed without a key"; exit 1; fi
       - name: AgentKit and GOAT adapters
         working-directory: packages/mcp
-        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs
+        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs
       - name: Package contents
         working-directory: packages/mcp
         run: npm pack --dry-run
