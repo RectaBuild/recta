@@ -1,6 +1,6 @@
 {
   "name": "@recta/mcp",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "mcpName": "io.github.RectaBuild/recta",
   "description": "Local MCP server for Recta (api.recta.build): lets any MCP agent evaluate, authorize and execute cheaper cross-chain stablecoin routes with its own key, which never leaves the machine.",
   "license": "MIT",
@@ -60,7 +60,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@recta/client": "0.1.2",
+    "@recta/client": "0.1.3",
     "viem": "2.56.3"
   },
   "devDependencies": {

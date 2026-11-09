@@ -6,7 +6,22 @@ import { createRectaClient, RectaCheckError, RectaDebtError, RectaHttpError, pin
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.4" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.5" } as const;
+/** Sent on every request this package makes (its own and the client's), so Recta can count real use of it apart from
+ *  other clients (no address, no key). */
+export const MCP_USER_AGENT = `recta-mcp/${SERVER_INFO.version}`;
+
+/** `fetch` with this package's User-Agent on every request, whatever headers the caller set. */
+export function withRectaUserAgent(f: typeof fetch): typeof fetch {
+  return (input, init) => {
+    const headers: Record<string, string> = {};
+    // Fable J-2: a Request's own headers (a signature among them) are kept; init's override them, as fetch does.
+    if (typeof Request !== "undefined" && input instanceof Request) input.headers.forEach((value, key) => { headers[key] = value; });
+    new Headers(init?.headers).forEach((value, key) => { headers[key] = value; });
+    headers["user-agent"] = MCP_USER_AGENT;
+    return f(input, { ...init, headers });
+  };
+}
 
 export interface LocalServerOptions {
   readonly signer: RectaSigner;
@@ -104,10 +119,10 @@ export function createLocalServer(options: LocalServerOptions) {
     chain: options.chain,
     limits: options.limits,
     ...(options.referrer === undefined ? {} : { referrer: options.referrer }),
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    fetch: withRectaUserAgent(options.fetch ?? fetch),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
-  const doFetch = options.fetch ?? fetch;
+  const doFetch = withRectaUserAgent(options.fetch ?? fetch);
   /** The request behind each result_id this server evaluated: execute and preview check the artifact against it. */
   const requests = new Map<string, Json & { source_network: string; source_asset: string; destination_network: string; destination_asset: string; amount: string; sender: string; recipient: string }>();
 

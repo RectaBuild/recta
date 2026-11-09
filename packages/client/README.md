@@ -132,6 +132,10 @@ the declared messaging fee, within `maxNativeValueWei`.
 `RectaDebtError` with the offer. The package never signs a debt by itself: call `payDebt(offer)` if you agree (same
 checks, exact amount).
 
+## What each request identifies
+
+Every request this package sends carries the User-Agent `recta-client/<version>`, so Recta can count real use of the package apart from other clients. It names the package and its version only: never an address, a key or a request body.
+
 ## Limits of this version
 
 - EVM sources and EVM recipients only. Solana, Tron and Bitcoin routes, Relay and deBridge are refused.

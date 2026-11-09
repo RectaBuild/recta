@@ -157,3 +157,30 @@ test("Referral in the integration: npx @recta/mcp reads RECTA_REFERRER", () => {
   assert.equal(configFromEnv({ RECTA_PRIVATE_KEY: key, RECTA_REFERRER: referrer }).referrer, referrer);
   assert.throws(() => configFromEnv({ RECTA_PRIVATE_KEY: key, RECTA_REFERRER: "0xnope" }), /RECTA_REFERRER/);
 });
+
+test("every request names this package (recta-mcp/<version>, the package.json version), never an address", async () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const { MCP_USER_AGENT } = await import("../dist/server.js");
+  assert.equal(MCP_USER_AGENT, `recta-mcp/${pkg.version}`);
+  const { f, calls } = fakeFetch();
+  const by = Object.fromEntries(rectaActionProvider({ limits, fetch: f }).getActions(agentKitWallet()).map((a) => [a.name, a]));
+  await by.recta_evaluate.invoke(by.recta_evaluate.schema.parse(args));
+  await by.recta_trial_evaluation.invoke(args);
+  assert.ok(calls.length >= 2);
+  for (const c of calls) assert.equal(c.headers["user-agent"], MCP_USER_AGENT);
+  assert.ok(await recovers(calls.at(-2)));
+});
+
+test("the User-Agent wrapper keeps a Request's own headers, and the caller's fetch can still name our own tests", async () => {
+  const { withRectaUserAgent, MCP_USER_AGENT } = await import("../dist/server.js");
+  const seen = [];
+  const inner = async (input, init) => { seen.push(init.headers); return new Response("{}"); };
+  await withRectaUserAgent(inner)(new Request("https://api.recta.build/x", { headers: { "x-recta-signature": "0xabc" } }));
+  assert.equal(seen[0]["x-recta-signature"], "0xabc");
+  assert.equal(seen[0]["user-agent"], MCP_USER_AGENT);
+  // Our own runs pass a fetch that names them (recta-ops) after the package's header is set.
+  const ours = async (input, init) => inner(input, { ...init, headers: { ...init.headers, "user-agent": `recta-ops/1 ${init.headers["user-agent"]}` } });
+  await withRectaUserAgent(ours)("https://api.recta.build/y", { headers: { accept: "application/json" } });
+  assert.equal(seen[1]["user-agent"], `recta-ops/1 ${MCP_USER_AGENT}`);
+  assert.equal(seen[1].accept, "application/json");
+});

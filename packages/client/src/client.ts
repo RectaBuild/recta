@@ -1,6 +1,6 @@
 import { keccak256, type Hex } from "viem";
 import { checkExecutionArtifact, type CheckedArtifact, type EvaluationRequestView } from "./artifact.js";
-import { ISSUED_AT_HEADER, PATHS, RECTA_ORIGIN, SIGNATURE_HEADER, SIGNED_REQUEST_PREFIX, SIGNER_HEADER } from "./constants.js";
+import { ISSUED_AT_HEADER, PATHS, RECTA_ORIGIN, SIGNATURE_HEADER, SIGNED_REQUEST_PREFIX, SIGNER_HEADER, USER_AGENT } from "./constants.js";
 import { RectaCheckError, RectaDebtError, RectaHttpError } from "./errors.js";
 import { checkFeePermit } from "./fee.js";
 import { parseWalletPolicy } from "./policy.js";
@@ -86,7 +86,7 @@ export function createRectaClient(options: RectaClientOptions) {
 
   async function call(method: "GET" | "POST", path: string, body?: unknown, idempotencyKey?: string, signed = true): Promise<Answer> {
     const bytes = body === undefined ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(body));
-    const headers: Record<string, string> = { accept: "application/json" };
+    const headers: Record<string, string> = { accept: "application/json", "user-agent": USER_AGENT };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (idempotencyKey !== undefined) headers["idempotency-key"] = idempotencyKey;
     if (signed) {
