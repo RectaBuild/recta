@@ -1,11 +1,9 @@
 name: MCP package CI
 
+# Run by baseline.yml ("Baseline checks", the status check main's ruleset requires) on every pull request and
+# every push to main, so a path filter can never leave that check missing.
 on:
-  pull_request:
-    paths: ["packages/mcp/**", "packages/client/**", ".github/workflows/mcp-*.yml"]
-  push:
-    branches: [main]
-    paths: ["packages/mcp/**", "packages/client/**", ".github/workflows/mcp-*.yml"]
+  workflow_call:
 
 permissions:
   contents: read

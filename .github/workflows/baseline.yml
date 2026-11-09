@@ -1,0 +1,26 @@
+name: Baseline checks
+
+# main's ruleset requires the status check "Baseline checks". It runs on every pull request (no path filter, so the
+# check is never missing) and is green only when both package CIs pass.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    uses: ./.github/workflows/client-ci.yml
+  mcp:
+    uses: ./.github/workflows/mcp-ci.yml
+  baseline:
+    name: Baseline checks
+    needs: [client, mcp]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Both package CIs passed
+        run: |
+          [ "${{ needs.client.result }}" = success ] && [ "${{ needs.mcp.result }}" = success ] || { echo "client: ${{ needs.client.result }}, mcp: ${{ needs.mcp.result }}"; exit 1; }
