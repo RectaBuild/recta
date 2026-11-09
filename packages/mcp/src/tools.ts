@@ -32,7 +32,7 @@ export interface RectaTool {
 }
 
 const GWEI = 1_000_000_000n;
-export const EXECUTING_TOOLS: ReadonlySet<string> = new Set(["recta_execute", "recta_pay_debt"]);
+export const EXECUTING_TOOLS: ReadonlySet<string> = new Set(["recta_execute", "recta_pay_debt", "recta_approve_fee"]);
 
 type JsonProperty = { readonly type?: string | readonly string[]; readonly enum?: readonly string[]; readonly description?: string };
 

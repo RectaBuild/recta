@@ -57,7 +57,7 @@ test("AgentKit: read-only actions by default, a signed evaluation from the walle
   assert.equal(provider.supportsNetwork({ protocolFamily: "evm", chainId: "8453" }), true);
   assert.equal(provider.supportsNetwork({ protocolFamily: "svm" }), false);
   const actions = provider.getActions(agentKitWallet());
-  assert.deepEqual(actions.map((a) => a.name).sort(), ["recta_evaluate", "recta_fit", "recta_ledger", "recta_preview", "recta_report", "recta_trial_evaluation"]);
+  assert.deepEqual(actions.map((a) => a.name).sort(), ["recta_evaluate", "recta_fee_funds", "recta_fit", "recta_ledger", "recta_preview", "recta_report", "recta_trial_evaluation"]);
   const by = Object.fromEntries(actions.map((a) => [a.name, a]));
   assert.throws(() => by.recta_evaluate.schema.parse({ source_network: "base" }));
 
@@ -90,7 +90,7 @@ test("AgentKit: never sends, even when asked to execute (its wallet providers re
   // Like the real ViemWalletProvider: re-estimates gas and fees, keeping only to/data/value.
   const rewriting = { ...agentKitWallet(), sendTransaction: async (tx) => { sent.push({ to: tx.to, data: tx.data, value: tx.value, gas: 999_999n, maxFeePerGas: 999n, maxPriorityFeePerGas: 99n }); return `0x${"ab".repeat(32)}`; } };
   const names = rectaActionProvider({ limits, fetch: f, allowExecute: true }).getActions(rewriting).map((a) => a.name);
-  assert.ok(!names.includes("recta_execute") && !names.includes("recta_pay_debt"));
+  assert.ok(!names.includes("recta_execute") && !names.includes("recta_pay_debt") && !names.includes("recta_approve_fee"));
   const tx = { chainId: 8453, to: `0x${"33".repeat(20)}`, data: "0x", value: 0n, gas: 21000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n };
   await assert.rejects(agentKitSigner(rewriting).sendTransaction(tx), /re-estimate gas and fees/);
   assert.equal(sent.length, 0);
@@ -108,7 +108,7 @@ test("GOAT: evaluation tools only, signed with the GOAT wallet, never sending", 
     signTypedData: async (td) => ({ signature: await account.signTypedData(td) }),
   };
   const tools = plugin.getTools(goatWallet);
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["recta_evaluate", "recta_fit", "recta_ledger", "recta_preview", "recta_report", "recta_trial_evaluation"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["recta_evaluate", "recta_fee_funds", "recta_fit", "recta_ledger", "recta_preview", "recta_report", "recta_trial_evaluation"]);
   const evaluate = tools.find((t) => t.name === "recta_evaluate");
   await evaluate.execute(evaluate.parameters.parse(args));
   assert.ok(await recovers(calls.at(-1)));

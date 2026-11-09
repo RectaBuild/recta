@@ -6,7 +6,7 @@ import { createRectaClient, RectaCheckError, RectaDebtError, RectaHttpError, pin
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.5" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.6" } as const;
 /** Sent on every request this package makes (its own and the client's), so Recta can count real use of it apart from
  *  other clients (no address, no key). */
 export const MCP_USER_AGENT = `recta-mcp/${SERVER_INFO.version}`;
@@ -91,6 +91,16 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: { result_id: { type: "string" }, origin_tx_hash: { type: "string" }, approval_tx_hash: { type: "string" } }, required: ["result_id", "origin_tx_hash"], additionalProperties: false },
   },
   {
+    name: "recta_fee_funds",
+    description: "Free, signs nothing: whether the local wallet can pay a Recta fee. Shows its USDC balance on Base and its USDC allowance to Permit2, against the operator's fee cap. A fee permit is only signed when both cover it, so a route never executes with a fee Recta cannot collect.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "recta_approve_fee",
+    description: "Sends one bounded approval on Base, USDC.approve(Permit2, amount), so Recta's fee permits can be collected. amount_usdc defaults to the operator's fee cap and may not exceed it; never an unlimited approval. Only available when the operator enabled execution.",
+    inputSchema: { type: "object", properties: { amount_usdc: { type: "string", description: "USDC, e.g. \"1\" or \"0.5\"; at most the operator's fee cap (RECTA_MAX_FEE_USDC)." } }, additionalProperties: false },
+  },
+  {
     name: "recta_pay_debt",
     description: "When recta_evaluate answered DEBT: signs the debt permit Recta offered (after the same checks as a fee permit, never above the operator's cap) so evaluations can continue. Only available when the operator enabled execution.",
     inputSchema: { type: "object", properties: { debt_offer: { type: "object", description: "The debt_offer object exactly as recta_evaluate returned it." } }, required: ["debt_offer"], additionalProperties: false },
@@ -104,7 +114,11 @@ export const TOOLS = [
 
 /** The unsigned trial (api.recta.build, BIT-OPS-079). */
 export const TRIAL_EVALUATION_PATH = "/v1/golden-corridor/trial-evaluation";
-const EXECUTING_TOOLS: ReadonlySet<string> = new Set(["recta_execute", "recta_pay_debt"]);
+const EXECUTING_TOOLS: ReadonlySet<string> = new Set(["recta_execute", "recta_pay_debt", "recta_approve_fee"]);
+const USDC_AMOUNT = /^\d+(\.\d{1,6})?$/;
+/** Gas limit of USDC.approve on Base (≈ 56 000 when the allowance goes from zero), with margin. */
+const APPROVE_GAS = 80_000n;
+const json = (v: unknown) => JSON.parse(JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x))) as unknown;
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const str = (args: Json, k: string): string => {
   const v = args[k];
@@ -175,7 +189,16 @@ export function createLocalServer(options: LocalServerOptions) {
       case "recta_preview": {
         const { id, request } = requestOf(args);
         const fee = await client.authorizeFee(id, { dryRun: true });
-        if (fee.fee.kind === "DRY_RUN") return { fee_permit_required: true, fee_ceiling_usdc_atomic: fee.fee.amountUsdcAtomic.toString(), within_operator_cap: true, note: "recta_execute signs this ceiling; Recta then charges exactly 5 % of the saving it verifies, never more than the ceiling." };
+        if (fee.fee.kind === "DRY_RUN") {
+          const funds = fee.fee.funds;
+          return {
+            fee_permit_required: true,
+            fee_ceiling_usdc_atomic: fee.fee.amountUsdcAtomic.toString(),
+            within_operator_cap: true,
+            fee_funds: funds === null ? { checked: false, error: fee.fee.fundsError } : json(funds),
+            note: `recta_execute signs this ceiling; Recta then charges exactly 5 % of the saving it verifies, never more than the ceiling. The transactions are shown only after the permit is signed.${funds !== null && !funds.ready ? ` Not ready to pay: ${funds.missing.join(" and ")} short on Base; recta_execute will refuse before signing (see recta_fee_funds / recta_approve_fee).` : ""}`,
+          };
+        }
         return { fee_permit_required: false, transactions: (await client.check(id, fee.artifact, request)).transactions };
       }
       case "recta_execute": {
@@ -193,6 +216,19 @@ export function createLocalServer(options: LocalServerOptions) {
         if (!HEX32.test(origin) || (approval !== undefined && !HEX32.test(approval))) throw new RectaCheckError("input", "transaction hashes must be 0x + 64 hex characters");
         const r = await client.report(id, origin as `0x${string}`, approval as `0x${string}` | undefined);
         return { report: r.stage, recta: r.body };
+      }
+      case "recta_fee_funds":
+        return json(await client.feeFunds());
+      case "recta_approve_fee": {
+        if (!options.allowExecute) throw new RectaCheckError("execution_disabled", "the operator has not enabled execution (RECTA_ALLOW_EXECUTE=yes)");
+        const raw = opt(args, "amount_usdc");
+        if (raw !== undefined && !USDC_AMOUNT.test(raw)) throw new RectaCheckError("input", "amount_usdc must be a decimal USDC amount, e.g. 1 or 0.5");
+        const [whole, frac = ""] = (raw ?? "").split(".");
+        const approval = client.feeApproval(raw === undefined ? undefined : BigInt(whole!) * 1_000_000n + BigInt(frac.padEnd(6, "0")));
+        const [maxFeePerGas, maxPriorityFeePerGas] = await options.gasCapsFor("base");
+        const hash = await options.signer.sendTransaction({ chainId: approval.chainId, to: approval.to, data: approval.data, value: 0n, gas: APPROVE_GAS, maxFeePerGas, maxPriorityFeePerGas });
+        if (!(await options.chain.waitForSuccess(approval.chainId, hash))) throw new RectaCheckError("transaction_failed", `approval ${hash} reverted`);
+        return { approved_usdc_atomic: approval.amountUsdcAtomic.toString(), tx_hash: hash, fee_funds: json(await client.feeFunds()) };
       }
       case "recta_pay_debt": {
         if (!options.allowExecute) throw new RectaCheckError("execution_disabled", "the operator has not enabled execution (RECTA_ALLOW_EXECUTE=yes)");

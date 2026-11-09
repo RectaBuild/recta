@@ -36,7 +36,9 @@ const recta = createRectaClient({
   referrer: "0x…",                   // optional: the integrator that ships this agent (see "Referral for integrators")
 });
 
-// Dry run: evaluates and checks, signs no permit, sends no transaction.
+// Dry run: evaluates and checks, signs no permit, sends no transaction. With Recta's collection on it stops at the
+// fee permit, before the transactions exist (Recta hands them out only after the permit is signed): `preview.fee`
+// carries the permit it would sign and `funds`, whether this wallet can pay it (see "Paying the fee").
 const preview = await recta.run(request, { dryRun: true });
 
 // The whole flow.
@@ -46,7 +48,7 @@ const result = await recta.run(request);
 `request` is Recta's evaluation request (schema in the
 [service descriptor](https://api.recta.build/v1/golden-corridor/commercial-evaluations/schema)); its `sender` must be
 your signer's address. Each step is also available alone: `evaluate`, `authorizeFee`, `check`, `execute`, `report`,
-`ledger`, `payDebt`.
+`ledger`, `payDebt`, `feeFunds`, `feeApproval`.
 
 Your account must be an EOA: Recta's signed requests are EIP-191 signatures recovered to the sender's address.
 
@@ -94,6 +96,34 @@ The saving is measured against `baseline_provider`: the route your agent would u
 really uses. If your agent bridges through LI.FI (its public API or an aggregator built on it), declare `lifi`
 wherever the fit check (`GET /v1/golden-corridor/fit`) lists it in `declarable_baselines`; it is refused with
 `latency_class` SECONDS or MINUTES. Recta reads LI.FI's own transaction, its fee included. If that route is already the cheapest, Recta answers with no saving and charges nothing.
+
+## Paying the fee: USDC and the Permit2 allowance on Base
+
+Recta's fee is collected in USDC on Base through Permit2. Signing the permit is not enough: when Recta settles it,
+Permit2 pulls the fee with USDC's own `transferFrom`, so the wallet also needs, on Base, (1) at least the permit's amount
+in USDC and (2) an ERC-20 allowance from USDC to Permit2 (`0x000000000022D473030F116dDEE9F6B43aC78BA3`) of at least that
+amount. A new wallet has neither.
+
+Before it signs a fee or debt permit, the client reads both through `chain.readFeeFunds` (on Base: `viemChainReader`
+uses `publicClients[8453]`) and refuses, with `RectaCheckError` `fee_balance` or `fee_allowance`, when either is short.
+Nothing is signed and no route transaction is sent, so a route never executes with a fee Recta cannot collect.
+
+```ts
+const funds = await recta.feeFunds();      // { ready, balanceUsdcAtomic, permit2AllowanceUsdcAtomic, missing }
+if (funds.missing.includes("allowance")) {
+  const approval = recta.feeApproval();    // USDC.approve(Permit2, maxPermitUsdcAtomic) on Base, for you to send
+  // send `approval` (chainId, to, data, value) with your own wallet
+}
+```
+
+The approval is bounded: `feeApproval` defaults to, and may not exceed, `maxPermitUsdcAtomic`, and
+`permit2ApprovalTransaction` refuses 0 and any "unlimited" amount. The client never approves by itself. Each collected
+fee lowers the allowance; approve again when `feeFunds` reports it short. The check is a snapshot at signing: a wallet
+that later spends its USDC or revokes the allowance leaves the fee unpaid, which Recta records as a debt to settle
+before the next evaluation (`payDebt`).
+
+A custom `RectaChainReader` must implement `readFeeFunds(owner)`; when it cannot read Base it must throw, and the permit
+is then not signed (a dry run reports `funds: null` and the reason).
 
 ## What is checked before signing
 

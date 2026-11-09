@@ -1,6 +1,6 @@
 {
   "name": "@recta/client",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Client for Recta (api.recta.build): evaluate a cross-chain stablecoin transfer, authorize Recta's 5 %-of-verified-saving fee, execute the committed route and report it, with local checks before every signature.",
   "license": "MIT",
   "author": "Recta (https://recta.build)",

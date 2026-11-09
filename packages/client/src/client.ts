@@ -3,6 +3,7 @@ import { checkExecutionArtifact, type CheckedArtifact, type EvaluationRequestVie
 import { ISSUED_AT_HEADER, PATHS, RECTA_ORIGIN, SIGNATURE_HEADER, SIGNED_REQUEST_PREFIX, SIGNER_HEADER, USER_AGENT } from "./constants.js";
 import { RectaCheckError, RectaDebtError, RectaHttpError } from "./errors.js";
 import { checkFeePermit } from "./fee.js";
+import { assertFeeReady, feeReadiness, permit2ApprovalTransaction, type FeeReadiness, type Permit2Approval } from "./funds.js";
 import { parseWalletPolicy } from "./policy.js";
 import type { RectaChainReader, RectaSigner, RectaTypedData } from "./signer.js";
 
@@ -68,7 +69,7 @@ export type FeeOutcome =
   | { readonly kind: "NOT_REQUIRED" }
   | { readonly kind: "ALREADY_AUTHORIZED" }
   | { readonly kind: "AUTHORIZED"; readonly amountUsdcAtomic: bigint; readonly signature: Hex }
-  | { readonly kind: "DRY_RUN"; readonly amountUsdcAtomic: bigint; readonly typedData: RectaTypedData };
+  | { readonly kind: "DRY_RUN"; readonly amountUsdcAtomic: bigint; readonly typedData: RectaTypedData; readonly funds: FeeReadiness | null; readonly fundsError?: string };
 
 /**
  * Recta's flow for an agent that holds its own EOA: evaluate → authorizeFee → execute → report. Every step can be
@@ -124,8 +125,11 @@ export function createRectaClient(options: RectaClientOptions) {
 
   /**
    * Step 2: the decision's committed transactions. With Recta's collection on, the artifact first asks for the fee
-   * permit: it is checked, rebuilt and signed only if it passes, then stored, and the answer carries the artifact. With
-   * `dryRun`, it stops before signing and returns the typed data it would sign.
+   * permit: it is checked, rebuilt, and signed only if it passes and the payer holds the permit's amount in USDC on
+   * Base with at least that allowance to Permit2 (otherwise RectaCheckError `fee_balance` / `fee_allowance`, nothing
+   * signed; see `feeApproval`); then it is stored and the answer carries the artifact. With `dryRun` and collection on,
+   * it stops at the permit, before the artifact exists, and returns the typed data it would sign and the payer's funds:
+   * the transactions can only be inspected after the permit is signed.
    */
   async function authorizeFee(resultId: string, opts: { readonly dryRun?: boolean } = {}): Promise<{ readonly fee: FeeOutcome; readonly artifact: unknown }> {
     const id = resultIdOf(resultId);
@@ -144,7 +148,15 @@ export function createRectaClient(options: RectaClientOptions) {
         nowUnix: nowUnix(),
         ...(typeof expiry === "string" && /^[0-9]+$/.test(expiry) ? { commercialExpiryUnix: BigInt(expiry) } : {}),
       });
-      if (opts.dryRun === true) return { fee: { kind: "DRY_RUN", amountUsdcAtomic: checked.amount, typedData: checked.typedData }, artifact: undefined };
+      if (opts.dryRun === true) {
+        // A preview reports the funds; a reader that cannot read Base yields `funds: null` and the reason, never a signature.
+        let funds: FeeReadiness | null = null;
+        let fundsError: string | undefined;
+        try { funds = feeReadiness(await chain.readFeeFunds(signer.address), checked.amount); } catch (e) { fundsError = e instanceof Error ? e.message : String(e); }
+        return { fee: { kind: "DRY_RUN", amountUsdcAtomic: checked.amount, typedData: checked.typedData, funds, ...(fundsError === undefined ? {} : { fundsError }) }, artifact: undefined };
+      }
+      // ASTRA T2: never sign a fee Recta could not collect (no USDC or no Permit2 allowance on Base).
+      assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), checked.amount));
       const signature = await signer.signTypedData(checked.typedData);
       const s = await call("POST", `${PATHS.evaluations}/${id}/fee-authorization${referral}`, { signature, amount_usdc_atomic: checked.amount.toString() });
       if (s.status === 200 || s.status === 201) return { fee: { kind: "AUTHORIZED", amountUsdcAtomic: checked.amount, signature }, artifact: field(s.body, "artifact") };
@@ -199,6 +211,7 @@ export function createRectaClient(options: RectaClientOptions) {
     const checked = checkFeePermit(offer, { payer, maxPermitUsdcAtomic: limits.maxPermitUsdcAtomic, nowUnix: nowUnix() }, "DEBT");
     const debtId = field(offer, "debt_id");
     if (typeof debtId !== "string") throw new RectaCheckError("debt", "the offer has no debt_id");
+    assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), checked.amount));
     const signature = await signer.signTypedData(checked.typedData);
     const a = await call("POST", PATHS.feeDebts, { debt_id: debtId, deadline_unix: checked.deadline.toString(), signature });
     if (a.status !== 200 && a.status !== 201) throw new RectaHttpError(a.status, a.body);
@@ -220,7 +233,22 @@ export function createRectaClient(options: RectaClientOptions) {
     return { stage: "REPORTED" as const, decision, fee, ...sent, report: await report(resultId, sent.originTxHash, sent.approvalTxHash) };
   }
 
-  return { evaluate, authorizeFee, check, execute, report, ledger, payDebt, run, walletPolicy };
+  /** The payer's USDC balance and Permit2 allowance on Base against an amount (default: this client's permit limit). */
+  async function feeFunds(requiredUsdcAtomic: bigint = limits.maxPermitUsdcAtomic): Promise<FeeReadiness> {
+    return feeReadiness(await chain.readFeeFunds(signer.address), requiredUsdcAtomic);
+  }
+
+  /**
+   * The bounded approval `USDC.approve(Permit2, amount)` on Base, for the operator to send (`sendTransaction` is not
+   * called here: this client never approves by itself). The amount defaults to, and may not exceed, this client's
+   * permit limit, so the allowance never reaches past what one permit may authorize.
+   */
+  function feeApproval(amountUsdcAtomic: bigint = limits.maxPermitUsdcAtomic): Permit2Approval {
+    if (amountUsdcAtomic > limits.maxPermitUsdcAtomic) throw new RectaCheckError("fee_approval", `the approval ${amountUsdcAtomic} exceeds your permit limit ${limits.maxPermitUsdcAtomic}`);
+    return permit2ApprovalTransaction(amountUsdcAtomic);
+  }
+
+  return { evaluate, authorizeFee, check, execute, report, ledger, payDebt, run, walletPolicy, feeFunds, feeApproval };
 }
 
 export type RectaClient = ReturnType<typeof createRectaClient>;
