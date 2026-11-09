@@ -157,3 +157,16 @@ test("Referral in the integration: npx @recta/mcp reads RECTA_REFERRER", () => {
   assert.equal(configFromEnv({ RECTA_PRIVATE_KEY: key, RECTA_REFERRER: referrer }).referrer, referrer);
   assert.throws(() => configFromEnv({ RECTA_PRIVATE_KEY: key, RECTA_REFERRER: "0xnope" }), /RECTA_REFERRER/);
 });
+
+test("every request names this package (recta-mcp/<version>, the package.json version), never an address", async () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const { MCP_USER_AGENT } = await import("../dist/server.js");
+  assert.equal(MCP_USER_AGENT, `recta-mcp/${pkg.version}`);
+  const { f, calls } = fakeFetch();
+  const by = Object.fromEntries(rectaActionProvider({ limits, fetch: f }).getActions(agentKitWallet()).map((a) => [a.name, a]));
+  await by.recta_evaluate.invoke(by.recta_evaluate.schema.parse(args));
+  await by.recta_trial_evaluation.invoke(args);
+  assert.ok(calls.length >= 2);
+  for (const c of calls) assert.equal(c.headers["user-agent"], MCP_USER_AGENT);
+  assert.ok(await recovers(calls.at(-2)));
+});

@@ -8,6 +8,11 @@
 
 export const RECTA_ORIGIN = "https://api.recta.build";
 
+/** This package's version (equal to package.json, checked in CI). */
+export const CLIENT_VERSION = "0.1.3";
+/** Sent on every request so Recta can count real use of this package apart from other clients (no address, no key). */
+export const USER_AGENT = `recta-client/${CLIENT_VERSION}`;
+
 /** The fee: x402 `upto` on Base, a Permit2 `permitWitnessTransferFrom`. All lowercase. */
 export const FEE_CHAIN_ID = 8453;
 export const PERMIT2 = "0x000000000022d473030f116ddee9f6b43ac78ba3";

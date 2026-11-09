@@ -124,6 +124,10 @@ your address, once Recta's referral program is on (it starts together with fee c
 ElizaOS agents load MCP servers through its MCP plugin: point it at `npx -y @recta/mcp` with the environment above,
 or at the hosted endpoint `https://api.recta.build/mcp` for the unsigned tools.
 
+## What each request identifies
+
+Every request this package sends carries the User-Agent `recta-mcp/<version>`, so Recta can count real use of the package apart from other clients. It names the package and its version only: never an address, a key or a request body.
+
 ## Limits of this version
 
 - The server sends only source-chain transactions, so it always asks Recta for routes that need no destination

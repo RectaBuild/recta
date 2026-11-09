@@ -31,5 +31,15 @@ jobs:
             npx tsc -p tsconfig.build.json
             node -e "import('./dist/index.js').then((m) => { if (typeof m.createRectaClient !== 'function') process.exit(1); console.log('viem', '$v', Object.keys(m).length, 'exports'); })"
           done
+      - name: Requests name this package (recta-client/<package.json version>)
+        run: |
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+            const { pins } = await import('./dist/index.js');
+            if (pins.CLIENT_VERSION !== pkg.version || pins.USER_AGENT !== 'recta-client/' + pkg.version) { console.error('version', pins.CLIENT_VERSION, pkg.version); process.exit(1); }
+            console.log(pins.USER_AGENT);
+          "
+          grep -q '\"user-agent\": USER_AGENT' src/client.ts
       - name: Package contents
         run: npm pack --dry-run
