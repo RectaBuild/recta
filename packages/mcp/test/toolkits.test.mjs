@@ -170,3 +170,17 @@ test("every request names this package (recta-mcp/<version>, the package.json ve
   for (const c of calls) assert.equal(c.headers["user-agent"], MCP_USER_AGENT);
   assert.ok(await recovers(calls.at(-2)));
 });
+
+test("the User-Agent wrapper keeps a Request's own headers, and the caller's fetch can still name our own tests", async () => {
+  const { withRectaUserAgent, MCP_USER_AGENT } = await import("../dist/server.js");
+  const seen = [];
+  const inner = async (input, init) => { seen.push(init.headers); return new Response("{}"); };
+  await withRectaUserAgent(inner)(new Request("https://api.recta.build/x", { headers: { "x-recta-signature": "0xabc" } }));
+  assert.equal(seen[0]["x-recta-signature"], "0xabc");
+  assert.equal(seen[0]["user-agent"], MCP_USER_AGENT);
+  // Our own runs pass a fetch that names them (recta-ops) after the package's header is set.
+  const ours = async (input, init) => inner(input, { ...init, headers: { ...init.headers, "user-agent": `recta-ops/1 ${init.headers["user-agent"]}` } });
+  await withRectaUserAgent(ours)("https://api.recta.build/y", { headers: { accept: "application/json" } });
+  assert.equal(seen[1]["user-agent"], `recta-ops/1 ${MCP_USER_AGENT}`);
+  assert.equal(seen[1].accept, "application/json");
+});

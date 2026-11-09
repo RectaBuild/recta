@@ -15,6 +15,8 @@ export const MCP_USER_AGENT = `recta-mcp/${SERVER_INFO.version}`;
 export function withRectaUserAgent(f: typeof fetch): typeof fetch {
   return (input, init) => {
     const headers: Record<string, string> = {};
+    // Fable J-2: a Request's own headers (a signature among them) are kept; init's override them, as fetch does.
+    if (typeof Request !== "undefined" && input instanceof Request) input.headers.forEach((value, key) => { headers[key] = value; });
     new Headers(init?.headers).forEach((value, key) => { headers[key] = value; });
     headers["user-agent"] = MCP_USER_AGENT;
     return f(input, { ...init, headers });
