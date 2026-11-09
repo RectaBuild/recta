@@ -120,6 +120,7 @@ export async function main(): Promise<void> {
   const transport = (id: number) => http(config.rpcUrls[id]);
   const ids = networkChainIds();
   const account = config.privateKey === undefined ? undefined : privateKeyToAccount(config.privateKey);
+  if (account === undefined) process.stderr.write("recta-mcp: no RECTA_PRIVATE_KEY, running the free tools only (recta_fit, recta_trial_evaluation)\n");
   const server = createLocalServer({
     signer: account === undefined ? keylessSigner(config.address) : viemSigner({ account, walletClientFor: (id) => createWalletClient({ account, chain: chainOf(id), transport: transport(id) }) }),
     keyless: account === undefined,

@@ -60,3 +60,12 @@ test("keyless trial: the sender comes from the call or RECTA_ADDRESS, never the 
   assert.equal(body.sender, addr);
   await assert.rejects(keylessSigner(addr).signMessage("x"), (e) => e.check === "no_key");
 });
+
+test("with a key the trial's sender is always the wallet (Fable L-1 on #13)", async () => {
+  const calls = [];
+  const f = async (url, init) => { calls.push(init); return new Response("{}", { status: 200 }); };
+  const wallet = `0x${"cd".repeat(20)}`;
+  const server = createLocalServer({ signer: { ...keylessSigner(wallet) }, chain: { waitForSuccess: async () => true, readFeeFunds: async () => { throw new Error("unused"); } }, limits, allowExecute: false, fetch: f, gasCapsFor: async () => [7_000_000n, 1_000_000n] });
+  await server.call("recta_trial_evaluation", { ...args, sender: addr });
+  assert.equal(JSON.parse(calls.at(-1).body).sender, wallet);
+});

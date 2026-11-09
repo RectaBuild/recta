@@ -69,7 +69,7 @@ const TRIAL_INPUT = {
   ...EVALUATE_INPUT,
   properties: {
     ...EVALUATE_INPUT.properties,
-    sender: { type: "string", description: "The EVM address the transfer would leave from (0x + 40 hex). Defaults to the local wallet, or RECTA_ADDRESS when the server runs without a key." },
+    sender: { type: "string", description: "Only when the server runs without a key: the EVM address the transfer would leave from (0x + 40 hex), else RECTA_ADDRESS. With a key it is ignored: the sender is the local wallet." },
   },
 } as const;
 
@@ -167,7 +167,8 @@ export function createLocalServer(options: LocalServerOptions) {
 
   /** The evaluation request for the local wallet, as recta_evaluate signs it and recta_trial_evaluation sends it unsigned. */
   async function evaluationRequestOf(args: Json, trial = false) {
-    const given = trial ? opt(args, "sender") : undefined;
+    // Only a server without a key takes the trial's sender; with a key the sender is always the wallet (Fable L-1 on #13).
+    const given = trial && options.keyless === true ? opt(args, "sender") : undefined;
     if (given !== undefined && !ADDRESS.test(given)) throw new RectaCheckError("input", "sender must be an EVM address, 0x + 40 hex characters");
     const sender = given ?? options.signer.address;
     if (sender.toLowerCase() === ZERO_ADDRESS) throw new RectaCheckError("sender", "no sender: pass sender, or set RECTA_ADDRESS (a public address, never a key)");

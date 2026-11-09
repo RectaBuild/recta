@@ -35,7 +35,8 @@ Example for an MCP client configuration file (Claude Desktop, Cursor and others 
 **Try it first without a key.** Leave `RECTA_PRIVATE_KEY` out and the server offers only the two tools that sign
 nothing: `recta_fit` (is the corridor covered?) and `recta_trial_evaluation` (is there a provable saving for this
 transfer, and how much?). Give the trial a `sender`, or set `RECTA_ADDRESS` to the public address the transfer would
-leave from. Add the key when you want the route itself.
+leave from. The server says so on stderr when it starts without a key; an empty `RECTA_PRIVATE_KEY` counts as no key.
+Add the key when you want the route itself.
 
 Use a **dedicated wallet** that holds only what the agent may move, never your main one. The key sits in plain text in
 that configuration file (and in the environment of the server process), so anyone who can read the file can move the
@@ -46,7 +47,7 @@ wallet's funds.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `RECTA_PRIVATE_KEY` | none: free tools only | The agent wallet's private key (EOA). It is only used locally, to sign. Without it only `recta_fit` and `recta_trial_evaluation` are offered. |
-| `RECTA_ADDRESS` | none | A public address the keyless trial uses as `sender` (never a key). Ignored with a key: the key's address is the sender. |
+| `RECTA_ADDRESS` | none | A public address the keyless trial uses as `sender` (never a key). With a key it is not used (the key's address is the sender), but a malformed value still stops the server. |
 | `RECTA_RPC_<chainId>` | the chain's public RPC | An `https` RPC URL for that chain, e.g. `RECTA_RPC_8453` for Base. `http` is accepted only for `localhost`; any other value stops the server. |
 | `RECTA_ALLOW_EXECUTE` | off | Set to `yes` to let the agent sign fee permits and send transactions. Anything else keeps the server read and preview only. |
 | `RECTA_MAX_FEE_USDC` | `1` | The most one fee permit may authorize, in USDC. A larger permit is refused. |
@@ -62,7 +63,7 @@ wallet's funds.
 | --- | --- | --- |
 | `recta_fit` | nothing | Does Recta cover this corridor, and which contracts would a route touch? |
 | `recta_evaluate` | a request signature | Asks Recta whether a cheaper route than `baseline_provider` can be proven. Free. |
-| `recta_trial_evaluation` | nothing | The same question unsigned: only whether a saving exists, its amount and Recta's 5 %. No route, nothing stored, 3 a day per address. |
+| `recta_trial_evaluation` | nothing | The same question unsigned: only whether a saving exists, its amount and Recta's 5 %. No route, nothing stored, 3 a day per address. Without a key, pass `sender` (or set `RECTA_ADDRESS`). |
 | `recta_preview` | a request signature | Shows the fee ceiling Recta asks you to authorize, after the local permit check, and whether the wallet can pay it. With collection on, the transactions appear only after the permit is signed. |
 | `recta_fee_funds` | nothing | The wallet's USDC balance on Base and its USDC allowance to Permit2, against `amount_usdc` (default `RECTA_MAX_FEE_USDC`). |
 | `recta_approve_fee` | one approval | Sends `USDC.approve(Permit2, amount)` on Base, at most `RECTA_MAX_FEE_USDC`, never unlimited. Only with `RECTA_ALLOW_EXECUTE=yes`. |
