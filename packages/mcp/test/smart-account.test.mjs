@@ -194,6 +194,10 @@ for (const [label, pm, message] of [
   ["the call gas", { paymasterAndData: `0x${"11".repeat(20)}`, callGasLimit: "0xffffff" }, /call gas limit/],
   ["the fee caps", { paymasterAndData: `0x${"11".repeat(20)}`, maxFeePerGas: "0xffffffffff" }, /fee caps/],
   ["the sender", { paymasterAndData: `0x${"11".repeat(20)}`, sender: `0x${"de".repeat(20)}` }, /sender/],
+  ["the pre-verification gas as hex text (M-3)", { paymasterAndData: "0x", preVerificationGas: "0x38d7ea4c68000" }, /preVerificationGas/],
+  ["the verification gas as hex text (M-3)", { paymasterAndData: "0x", verificationGasLimit: "0x38d7ea4c68000" }, /verificationGasLimit/],
+  ["the pre-verification gas as a JSON number (M-3)", { paymasterAndData: "0x", preVerificationGas: 1e15 }, /preVerificationGas/],
+  ["the nonce (B-5)", { paymasterAndData: "0x", nonce: "0x10000000000000000" }, /nonce/],
   ["the init code of a deployed account", { paymasterAndData: `0x${"11".repeat(20)}`, initCode: `0x${"de".repeat(40)}` }, /init code/],
 ]) {
   test(`A-1: a paymaster that changes ${label} gets nothing signed or sent`, async () => {

@@ -202,14 +202,17 @@ export function smartAccountSigner(args: {
     sendTransaction: async (tx) => {
       if (tx.chainId !== FEE_CHAIN_ID) throw new Error(`a smart account sends on Base (${FEE_CHAIN_ID}) only, not on chain ${tx.chainId}`);
       const call = { to: tx.to, data: tx.data, value: tx.value };
+      // Fable B-5 on recta #15: the nonce is read here and must come back unchanged.
+      const nonce = await account.getNonce();
       const op = (await bundlerClient.prepareUserOperation({
         account,
         calls: [call],
+        nonce,
         callGasLimit: tx.gas,
         maxFeePerGas: tx.maxFeePerGas,
         maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
       } as never)) as unknown as Record<string, unknown>;
-      await checkPreparedOperation(op, account, call, tx, maxOverheadGas);
+      await checkPreparedOperation(op, account, call, tx, nonce, maxOverheadGas);
       const signature = await account.signUserOperation(op as never);
       const hash = (await bundlerClient.request({
         method: "eth_sendUserOperation",
@@ -228,23 +231,33 @@ export function smartAccountSigner(args: {
   };
 }
 
-const big = (v: unknown): bigint => (typeof v === "bigint" ? v : 0n);
+/** The gas fields counted against `maxOverheadGas`: each must be a bigint when present (Fable M-3 on recta #15: a paymaster
+ *  answer is spread onto the operation untyped, and a hex string or JSON number would otherwise count as 0 here and still
+ *  be signed at its real value). The first two must be present. */
+const OVERHEAD_GAS_FIELDS = ["verificationGasLimit", "preVerificationGas", "paymasterVerificationGasLimit", "paymasterPostOpGasLimit"] as const;
 const sameHex = (a: unknown, b: unknown): boolean => typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase();
 
 /** The prepared user operation is the committed call and nothing else, within the gas and fee bounds; or it throws. */
-async function checkPreparedOperation(op: Record<string, unknown>, account: SmartAccount, call: { to: Hex; data: Hex; value: bigint }, tx: RectaTransaction, maxOverheadGas: bigint): Promise<void> {
+async function checkPreparedOperation(op: Record<string, unknown>, account: SmartAccount, call: { to: Hex; data: Hex; value: bigint }, tx: RectaTransaction, nonce: bigint, maxOverheadGas: bigint): Promise<void> {
   const refuse = (what: string): never => { throw new Error(`the bundler or paymaster changed the user operation's ${what}: nothing was signed`); };
   if (!sameHex(op["sender"], account.address)) refuse("sender");
   if (!sameHex(op["callData"], await account.encodeCalls([call]))) refuse("call data");
   if (op["callGasLimit"] !== tx.gas) refuse("call gas limit");
   if (op["maxFeePerGas"] !== tx.maxFeePerGas || op["maxPriorityFeePerGas"] !== tx.maxPriorityFeePerGas) refuse("fee caps");
+  if (op["nonce"] !== nonce) refuse("nonce");
   if (op["authorization"] !== undefined) refuse("authorization");
   const factory = await account.getFactoryArgs();
   if (account.entryPoint.version === "0.6") {
     const expected = factory.factory !== undefined && factory.factoryData !== undefined ? concat([factory.factory, factory.factoryData]) : "0x";
     if (!sameHex(op["initCode"] ?? "0x", expected)) refuse("init code");
   } else if (!(sameHex(op["factory"] ?? "0x", factory.factory ?? "0x") && sameHex(op["factoryData"] ?? "0x", factory.factoryData ?? "0x"))) refuse("factory");
-  const overhead = big(op["verificationGasLimit"]) + big(op["preVerificationGas"]) + big(op["paymasterVerificationGasLimit"]) + big(op["paymasterPostOpGasLimit"]);
+  let overhead = 0n;
+  for (const [i, name] of OVERHEAD_GAS_FIELDS.entries()) {
+    const v = op[name];
+    if (v === undefined && i >= 2) continue;
+    if (typeof v !== "bigint" || v < 0n) refuse(name);
+    overhead += v as bigint;
+  }
   if (overhead > maxOverheadGas) throw new Error(`the user operation's verification and pre-verification gas (${overhead}) exceeds the limit ${maxOverheadGas}: nothing was signed`);
 }
 
