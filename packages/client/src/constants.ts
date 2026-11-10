@@ -44,7 +44,7 @@ export const FEE_PERMIT_TYPES = {
   ],
 } as const;
 
-/** Signed requests (EIP-191 `personal_sign` by the sender's EOA). */
+/** Signed requests from this package (EIP-191 `personal_sign` by the sender's EOA; smart accounts sign v2 via the API). */
 export const SIGNED_REQUEST_PREFIX = "Recta signed request v1";
 export const SIGNER_HEADER = "x-recta-signer";
 export const ISSUED_AT_HEADER = "x-recta-issued-at";

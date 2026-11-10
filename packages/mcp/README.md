@@ -147,14 +147,15 @@ Every request this package sends carries the User-Agent `recta-mcp/<version>`, s
 
 ## Limits of this version
 
-- The server sends only source-chain transactions, so it always asks Recta for routes that need no destination
-  transaction from you (`destination_execution: NONE`). Routes that need you to complete a mint on the destination
-  chain are not offered.
+- The server sends only source-chain transactions, so it asks Recta only for routes that need no destination
+  transaction from you (`destination_execution: NONE`). Only routes that need you to complete a mint on the
+  destination chain (CCTP with your own receive) are left out; every other route is offered.
 - The same limits as `@recta/client`: EVM sources and recipients only, and only the corridors and contracts pinned in
-  the release. The server signs with an EOA key only; Recta's API also accepts smart accounts (ERC-1271, or ERC-6492
-  before deployment) on Base, but through the API directly, not through this server yet.
-- Gas price ceilings are set to twice the source chain's current estimate when the agent evaluates, never above
-  `RECTA_MAX_FEE_GWEI` and `RECTA_MAX_PRIORITY_FEE_GWEI`.
+  the release (a safety measure: it refuses to sign against a contract it does not know). The server signs with an EOA
+  key only; Recta's API also accepts smart accounts for transfers whose source is Base (ERC-1271; ERC-6492 before deployment for
+  requests only: paying a fee needs the account deployed on Base), through the API directly, not through this server yet.
+- The source chain's max fee per gas is twice its current estimate when the agent evaluates, never above
+  `RECTA_MAX_FEE_GWEI`; the priority fee is the current estimate, never above `RECTA_MAX_PRIORITY_FEE_GWEI`.
 
 ## License
 
