@@ -44,7 +44,7 @@ jobs:
           echo "$free" | tail -1 | grep -q 'no_key' || { echo "a signing tool was not refused without a key"; exit 1; }
       - name: AgentKit and GOAT adapters
         working-directory: packages/mcp
-        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs
+        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs test/smart-account.test.mjs
       - name: Package contents
         working-directory: packages/mcp
         run: npm pack --dry-run

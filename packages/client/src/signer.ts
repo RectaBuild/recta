@@ -1,4 +1,5 @@
 import type { Account, Chain, Hex, PublicClient, Transport, TransactionSerializable, WalletClient } from "viem";
+import type { BundlerClient, SmartAccount } from "viem/account-abstraction";
 import { toAccount } from "viem/accounts";
 import { FEE_CHAIN_ID, PERMIT2, USDC_BASE } from "./constants.js";
 import { ERC20_READ_ABI, safeErrorText, type FeeFunds } from "./funds.js";
@@ -23,11 +24,21 @@ export interface RectaTypedData {
 }
 
 /**
- * What this package needs from a wallet, and nothing more. It never receives or stores a key. This package signs as
- * an EOA: its requests are EIP-191 signatures recovered to the sender's address (a smart account uses the API directly).
+ * What this package needs from a wallet, and nothing more. It never receives or stores a key. An EOA signs Recta's v1
+ * request text (EIP-191, recovered to the sender's address). A smart account (`smartAccountSigner`) signs the v2 text,
+ * which also names the account and Base, and Recta asks the account itself on Base whether the signature holds
+ * (ERC-1271, or ERC-6492 before it is deployed).
  */
 export interface RectaSigner {
   readonly address: Hex;
+  /**
+   * Present only for a smart account: the chain on which Recta checks its signatures. Recta accepts a smart account on
+   * Base only (8453), where its fee is collected, so its transfers must start from Base.
+   */
+  readonly smartAccountChainId?: typeof FEE_CHAIN_ID;
+  /** Smart account only: whether its code is on Base. A fee or debt permit is signed only once it is (Permit2 cannot
+   *  deploy an account, so Recta refuses an ERC-6492 permit). */
+  isDeployed?(): Promise<boolean>;
   signMessage(message: string): Promise<Hex>;
   signTypedData(typedData: RectaTypedData): Promise<Hex>;
   /** Sends one transaction on `tx.chainId` and returns its hash. */
@@ -147,6 +158,45 @@ export function cdpSigner(args: {
       }
       if (args.walletClientFor === undefined) throw new Error(`CDP does not send on chain ${tx.chainId}: give cdpSigner a walletClientFor`);
       return sendWith(args.walletClientFor(tx.chainId), account, tx);
+    },
+  };
+}
+
+/**
+ * A RectaSigner from a viem smart account on Base (e.g. `toCoinbaseSmartAccount` from `viem/account-abstraction`) and
+ * an ERC-4337 bundler client on Base (give the bundler client a paymaster to sponsor gas, if you have one).
+ *
+ * Requests and fee permits are signed by the account (viem wraps them in ERC-6492 while it is not deployed; Recta then
+ * accepts requests, and this package refuses to sign a fee permit until the account is deployed). Each route
+ * transaction, after this package's checks like any other, becomes one user operation: one call with the committed
+ * `to`, `data` and `value`, its call gas limited to the committed gas, its fees capped by the committed fee caps. The
+ * returned hash is the bundle's transaction once the operation itself succeeded; a failed operation throws.
+ */
+export function smartAccountSigner(args: {
+  readonly account: SmartAccount;
+  readonly bundlerClient: Pick<BundlerClient, "sendUserOperation" | "waitForUserOperationReceipt">;
+}): RectaSigner {
+  const { account, bundlerClient } = args;
+  const chainId = account.client.chain?.id;
+  if (chainId !== FEE_CHAIN_ID) throw new Error(`the smart account's client is on chain ${String(chainId)}: Recta accepts smart accounts on Base (${FEE_CHAIN_ID}) only`);
+  return {
+    address: account.address,
+    smartAccountChainId: FEE_CHAIN_ID,
+    isDeployed: () => account.isDeployed(),
+    signMessage: (message) => account.signMessage({ message }),
+    signTypedData: (td) => account.signTypedData(td as never),
+    sendTransaction: async (tx) => {
+      if (tx.chainId !== FEE_CHAIN_ID) throw new Error(`a smart account sends on Base (${FEE_CHAIN_ID}) only, not on chain ${tx.chainId}`);
+      const hash = await bundlerClient.sendUserOperation({
+        account,
+        calls: [{ to: tx.to, data: tx.data, value: tx.value }],
+        callGasLimit: tx.gas,
+        maxFeePerGas: tx.maxFeePerGas,
+        maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+      } as never);
+      const receipt = await bundlerClient.waitForUserOperationReceipt({ hash });
+      if (!receipt.success) throw new Error(`user operation ${hash} failed${receipt.reason === undefined ? "" : `: ${receipt.reason}`}`);
+      return receipt.receipt.transactionHash;
     },
   };
 }
