@@ -150,8 +150,9 @@ Every request this package sends carries the User-Agent `recta-mcp/<version>`, s
 - The server sends only source-chain transactions, so it always asks Recta for routes that need no destination
   transaction from you (`destination_execution: NONE`). Routes that need you to complete a mint on the destination
   chain are not offered.
-- The same limits as `@recta/client`: EVM sources and recipients only, EOA wallets only (no smart accounts), and only
-  the corridors and contracts pinned in the release.
+- The same limits as `@recta/client`: EVM sources and recipients only, and only the corridors and contracts pinned in
+  the release. The server signs with an EOA key only; Recta's API also accepts smart accounts (ERC-1271, or ERC-6492
+  before deployment) on Base, but through the API directly, not through this server yet.
 - Gas price ceilings are set to twice the source chain's current estimate when the agent evaluates, never above
   `RECTA_MAX_FEE_GWEI` and `RECTA_MAX_PRIORITY_FEE_GWEI`.
 

@@ -178,7 +178,9 @@ Every request this package sends carries the User-Agent `recta-client/<version>`
 
 - EVM sources and EVM recipients only. Solana, Tron and Bitcoin routes, Relay and deBridge are refused.
 - A corridor or contract Recta adds after this release is refused until a new release pins it.
-- Smart accounts (EIP-1271) cannot sign Recta's requests.
+- This package signs with an EOA key only. Recta's API also accepts smart accounts (ERC-1271, or ERC-6492 before
+  deployment) on Base, but this package cannot sign for one yet: a smart account calls the API directly (see
+  `https://api.recta.build/llms.txt`).
 
 ## Provenance
 
