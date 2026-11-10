@@ -50,7 +50,8 @@ const result = await recta.run(request);
 your signer's address. Each step is also available alone: `evaluate`, `authorizeFee`, `check`, `execute`, `report`,
 `ledger`, `payDebt`, `feeFunds`, `feeApproval`.
 
-Your account must be an EOA: Recta's signed requests are EIP-191 signatures recovered to the sender's address.
+This package signs with an EOA: its signed requests are EIP-191 signatures recovered to the sender's address. A smart
+account can use Recta's API directly (see Limits below).
 
 ## Referral for integrators
 
@@ -177,8 +178,12 @@ Every request this package sends carries the User-Agent `recta-client/<version>`
 ## Limits of this version
 
 - EVM sources and EVM recipients only. Solana, Tron and Bitcoin routes, Relay and deBridge are refused.
-- A corridor or contract Recta adds after this release is refused until a new release pins it.
-- Smart accounts (EIP-1271) cannot sign Recta's requests.
+- This package signs with an EOA key only. Recta's API also accepts smart accounts for transfers whose source is Base (ERC-1271; ERC-6492 before deployment for
+  requests only: paying a fee needs the account deployed on Base), but this package cannot sign for one yet: a smart account
+  calls the API directly (see `https://api.recta.build/llms.txt`).
+- Only the corridors and contracts pinned in the release, as a safety measure: the package refuses to sign against a
+  contract it does not know. A corridor or contract Recta adds later is served by the API at once, but refused by
+  this package until a new release pins it.
 
 ## Provenance
 

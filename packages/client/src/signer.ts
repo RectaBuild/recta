@@ -23,8 +23,8 @@ export interface RectaTypedData {
 }
 
 /**
- * What this package needs from a wallet, and nothing more. It never receives or stores a key. The account must be an
- * EOA: Recta's signed requests are EIP-191 signatures recovered to the sender's address (smart accounts cannot).
+ * What this package needs from a wallet, and nothing more. It never receives or stores a key. This package signs as
+ * an EOA: its requests are EIP-191 signatures recovered to the sender's address (a smart account uses the API directly).
  */
 export interface RectaSigner {
   readonly address: Hex;
