@@ -97,7 +97,14 @@ const recta = createRectaClient({
   `RectaCheckError` `account_not_deployed`. Its first user operation deploys it, for example the bounded approval from
   `feeApproval()`.
 - Each checked route transaction is one user operation: the committed call, call gas limited to the committed gas
-  limit, fees capped by the committed fee caps. A failed operation throws even when its bundle transaction succeeded.
+  limit, fees capped by the committed fee caps. The bundler client (and its paymaster) prepares it, and the signer
+  checks it again before the account signs. Nothing is signed if they changed the call, the sender, the call gas, the
+  fee caps or the init code, or if verification, pre-verification and paymaster gas exceed `maxOverheadGas` (default
+  `DEFAULT_USER_OPERATION_OVERHEAD_GAS`, 1 500 000). A failed operation throws even when its bundle transaction
+  succeeded. A receipt that does not arrive in time throws an error naming the operation: look it up before sending
+  again.
+- Recta recognizes the operation in a bundle sent straight to an ERC-4337 EntryPoint (v0.6, v0.7 or v0.8). A bundler
+  that relays through another contract first is not recognized.
 - `report` never sends a smart account's `approval_tx_hash`: the approval is the account's operation, not the
   committed transaction field by field, so Recta counts it at its committed upper bound.
 

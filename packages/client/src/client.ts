@@ -59,6 +59,15 @@ export function smartAccountSignedRequestMessage(f: Parameters<typeof signedRequ
   ].join("\n");
 }
 
+/** ERC-6492's magic suffix: a signature from an account that is not deployed yet. */
+const ERC6492_SUFFIX = "6492649264926492649264926492649264926492649264926492649264926492";
+
+/** A permit signature Recta can collect: never an ERC-6492 wrapper, which Permit2 cannot use (Fable B-4 on recta #15). */
+function permitSignature(signature: Hex): Hex {
+  if (signature.toLowerCase().endsWith(ERC6492_SUFFIX)) throw new RectaCheckError("account_not_deployed", "the signer returned an ERC-6492 signature (an account not deployed yet): Permit2 cannot use it, so it was not sent");
+  return signature;
+}
+
 interface Answer {
   readonly status: number;
   readonly body: unknown;
@@ -208,7 +217,7 @@ export function createRectaClient(options: RectaClientOptions) {
       // ASTRA T2: never sign a fee Recta could not collect (no USDC or no Permit2 allowance on Base).
       assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), checked.amount, reserve));
       await assertPermitSignable();
-      const signature = await signer.signTypedData(checked.typedData);
+      const signature = permitSignature(await signer.signTypedData(checked.typedData));
       const s = await call("POST", `${PATHS.evaluations}/${id}/fee-authorization${referral}`, { signature, amount_usdc_atomic: checked.amount.toString() });
       if (s.status === 200 || s.status === 201) feeAmounts.set(id, checked.amount);
       if (s.status === 200 || s.status === 201) return { fee: { kind: "AUTHORIZED", amountUsdcAtomic: checked.amount, signature }, artifact: field(s.body, "artifact") };
@@ -272,7 +281,7 @@ export function createRectaClient(options: RectaClientOptions) {
     if (typeof debtId !== "string") throw new RectaCheckError("debt", "the offer has no debt_id");
     assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), checked.amount));
     await assertPermitSignable();
-    const signature = await signer.signTypedData(checked.typedData);
+    const signature = permitSignature(await signer.signTypedData(checked.typedData));
     const a = await call("POST", PATHS.feeDebts, { debt_id: debtId, deadline_unix: checked.deadline.toString(), signature });
     if (a.status !== 200 && a.status !== 201) throw new RectaHttpError(a.status, a.body);
     return a.body as Record<string, unknown>;

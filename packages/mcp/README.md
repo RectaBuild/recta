@@ -59,7 +59,8 @@ wallet's funds.
 | `RECTA_BUNDLER_URL` | none | With `RECTA_SMART_ACCOUNT`, required: an `https` ERC-4337 bundler URL on Base. Route transactions are sent through it as user operations. |
 | `RECTA_PAYMASTER_URL` | none | With `RECTA_SMART_ACCOUNT`, optional: an `https` paymaster URL on Base that sponsors the gas. Without it the account pays its gas in ETH on Base. |
 | `RECTA_SMART_ACCOUNT_ADDRESS` | the key's own account | With `RECTA_SMART_ACCOUNT`, an existing account the key is an owner of (for example one created by an app or by CDP). Without it, the account the key alone owns (Coinbase Smart Wallet v1.1, nonce 0). |
-| `RECTA_SMART_ACCOUNT_OWNER_INDEX` | `0` | With `RECTA_SMART_ACCOUNT`, the key's position among the account's owners. |
+| `RECTA_SMART_ACCOUNT_OWNER_INDEX` | `0` | With `RECTA_SMART_ACCOUNT`, the key's position among the account's owners. Any value other than `0` needs `RECTA_SMART_ACCOUNT_ADDRESS`. |
+| `RECTA_MAX_USEROP_OVERHEAD_GAS` | `1500000` | With `RECTA_SMART_ACCOUNT`, the most gas one user operation may spend besides its call (verification, pre-verification and any paymaster gas). An operation the bundler estimates above it is not signed. |
 | `RECTA_REFERRER` | none | The EVM address of whoever set this agent up (a template or framework author). See "Referral for integrators". A malformed address stops the server. |
 
 ## Tools
@@ -158,8 +159,14 @@ the fee. On start the server prints the account's address on stderr.
   deployed by its first user operation, for example `recta_approve_fee`; until then the server refuses to sign a
   permit (`account_not_deployed`).
 - Each checked route transaction is sent as one user operation with the committed call, its call gas limited to the
-  committed gas limit and its fees capped by the committed fee caps. A failed operation is reported as a failure even
-  though the bundle that carried it succeeded.
+  committed gas limit and its fees capped by the committed fee caps. The bundler and the paymaster prepare it, and the
+  server checks it again before the account signs: if either changed the call, the sender, the call gas, the fee caps
+  or the account's init code, or asks for more than `RECTA_MAX_USEROP_OVERHEAD_GAS`, nothing is signed. A failed
+  operation is reported as a failure even though the bundle that carried it succeeded. If its receipt does not arrive
+  in time, the server says so and names the operation: look it up before trying again.
+- Recta recognizes the operation in a bundle sent straight to the ERC-4337 EntryPoint (v0.6, v0.7 or v0.8), which is
+  what common bundlers do. A bundler that relays through another contract first is not recognized and the report is
+  refused.
 - The Permit2 approval sent by the account is not reported to Recta (it is not the committed transaction field by
   field); Recta counts its cost at the committed upper bound, which can only understate your saving.
 

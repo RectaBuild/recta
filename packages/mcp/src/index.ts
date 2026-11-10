@@ -3,7 +3,7 @@ import { createPublicClient, createWalletClient, http, type Chain, type Hex } fr
 import { createBundlerClient, createPaymasterClient, toCoinbaseSmartAccount } from "viem/account-abstraction";
 import { privateKeyToAccount } from "viem/accounts";
 import * as chains from "viem/chains";
-import { PINNED_ROUTES, RectaCheckError, smartAccountSigner, viemChainReader, viemSigner, type RectaSigner } from "@recta/client";
+import { DEFAULT_USER_OPERATION_OVERHEAD_GAS, PINNED_ROUTES, RectaCheckError, smartAccountSigner, viemChainReader, viemSigner, type RectaSigner } from "@recta/client";
 import { createLocalServer } from "./server.js";
 
 export { createLocalServer, TOOLS, MCP_PROTOCOL_VERSIONS, SERVER_INFO, type LocalServerOptions } from "./server.js";
@@ -42,6 +42,8 @@ export interface EnvConfig {
     /** An existing account the key owns (otherwise the account the key alone would create, nonce 0). */
     readonly address?: Hex;
     readonly ownerIndex: number;
+    /** RECTA_MAX_USEROP_OVERHEAD_GAS: the most verification + pre-verification (+ paymaster) gas one operation may use. */
+    readonly maxOverheadGas: bigint;
   };
 }
 
@@ -113,8 +115,9 @@ function smartAccountFromEnv(env: Readonly<Record<string, string | undefined>>, 
   const paymasterUrl = set(env["RECTA_PAYMASTER_URL"]);
   const address = set(env["RECTA_SMART_ACCOUNT_ADDRESS"]);
   const ownerIndex = set(env["RECTA_SMART_ACCOUNT_OWNER_INDEX"]);
+  const overhead = set(env["RECTA_MAX_USEROP_OVERHEAD_GAS"]);
   if (kind === undefined) {
-    if ([bundlerUrl, paymasterUrl, address, ownerIndex].some((v) => v !== undefined)) throw new Error("RECTA_BUNDLER_URL, RECTA_PAYMASTER_URL and RECTA_SMART_ACCOUNT_* need RECTA_SMART_ACCOUNT=coinbase");
+    if ([bundlerUrl, paymasterUrl, address, ownerIndex, overhead].some((v) => v !== undefined)) throw new Error("RECTA_BUNDLER_URL, RECTA_PAYMASTER_URL, RECTA_MAX_USEROP_OVERHEAD_GAS and RECTA_SMART_ACCOUNT_* need RECTA_SMART_ACCOUNT=coinbase");
     return undefined;
   }
   if (kind !== "coinbase") throw new Error("RECTA_SMART_ACCOUNT must be coinbase (a Coinbase Smart Wallet on Base), or unset for an EOA");
@@ -123,12 +126,16 @@ function smartAccountFromEnv(env: Readonly<Record<string, string | undefined>>, 
   if (paymasterUrl !== undefined && !RPC_URL.test(paymasterUrl)) throw new Error("RECTA_PAYMASTER_URL must be an https URL (http is allowed only for localhost)");
   if (address !== undefined && !/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("RECTA_SMART_ACCOUNT_ADDRESS must be the smart account's 0x-prefixed address");
   if (ownerIndex !== undefined && !/^(0|[1-9][0-9]{0,2})$/.test(ownerIndex)) throw new Error("RECTA_SMART_ACCOUNT_OWNER_INDEX must be the key's owner index in the account (0, 1, 2…)");
+  // Fable B-1 on recta #15: another owner index needs the account's address (the key alone would derive another account).
+  if (ownerIndex !== undefined && ownerIndex !== "0" && address === undefined) throw new Error("RECTA_SMART_ACCOUNT_OWNER_INDEX other than 0 needs RECTA_SMART_ACCOUNT_ADDRESS: the existing account the key is an owner of");
+  if (overhead !== undefined && !/^[1-9][0-9]{0,8}$/.test(overhead)) throw new Error("RECTA_MAX_USEROP_OVERHEAD_GAS must be a positive integer number of gas");
   return {
     kind,
     bundlerUrl,
     ...(paymasterUrl === undefined ? {} : { paymasterUrl }),
     ...(address === undefined ? {} : { address: address as Hex }),
     ownerIndex: ownerIndex === undefined ? 0 : Number(ownerIndex),
+    maxOverheadGas: overhead === undefined ? DEFAULT_USER_OPERATION_OVERHEAD_GAS : BigInt(overhead),
   };
 }
 
@@ -180,7 +187,7 @@ export async function coinbaseSmartAccountSigner(
     transport: http(settings.bundlerUrl),
     ...(settings.paymasterUrl === undefined ? {} : { paymaster: createPaymasterClient({ transport: http(settings.paymasterUrl) }) }),
   });
-  return smartAccountSigner({ account, bundlerClient });
+  return smartAccountSigner({ account, bundlerClient, maxOverheadGas: settings.maxOverheadGas });
 }
 
 export async function main(): Promise<void> {
