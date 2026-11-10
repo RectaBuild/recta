@@ -46,7 +46,7 @@ wallet's funds.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `RECTA_PRIVATE_KEY` | none: free tools only | The agent wallet's private key (EOA). It is only used locally, to sign. Without it only `recta_fit` and `recta_trial_evaluation` are offered. |
+| `RECTA_PRIVATE_KEY` | none: free tools only | The agent wallet's private key (EOA), or the owner key of its smart account (see `RECTA_SMART_ACCOUNT`). It is only used locally, to sign. Without it only `recta_fit` and `recta_trial_evaluation` are offered. |
 | `RECTA_ADDRESS` | none | A public address the keyless trial uses as `sender` (never a key). With a key it is not used (the key's address is the sender), but a malformed value still stops the server. |
 | `RECTA_RPC_<chainId>` | the chain's public RPC | An `https` RPC URL for that chain, e.g. `RECTA_RPC_8453` for Base. `http` is accepted only for `localhost`; any other value stops the server. |
 | `RECTA_ALLOW_EXECUTE` | off | Set to `yes` to let the agent sign fee permits and send transactions. Anything else keeps the server read and preview only. |
@@ -55,6 +55,12 @@ wallet's funds.
 | `RECTA_MAX_FEE_GWEI` | `50` | The highest source-chain `maxFeePerGas` an evaluation may commit to, whatever the RPC estimates. |
 | `RECTA_MAX_PRIORITY_FEE_GWEI` | `2` | The highest priority fee an evaluation may commit to. |
 | `RECTA_MIN_OUTPUT_BPS` | `9900` | The route must guarantee the recipient at least this share of the amount sent, in basis points (1–10000). |
+| `RECTA_SMART_ACCOUNT` | none: an EOA | Set to `coinbase` when the agent's wallet is a Coinbase Smart Wallet on Base owned by `RECTA_PRIVATE_KEY`. See "Smart accounts". Any other value stops the server. |
+| `RECTA_BUNDLER_URL` | none | With `RECTA_SMART_ACCOUNT`, required: an `https` ERC-4337 bundler URL on Base. Route transactions are sent through it as user operations. |
+| `RECTA_PAYMASTER_URL` | none | With `RECTA_SMART_ACCOUNT`, optional: an `https` paymaster URL on Base that sponsors the gas. Without it the account pays its gas in ETH on Base. |
+| `RECTA_SMART_ACCOUNT_ADDRESS` | the key's own account | With `RECTA_SMART_ACCOUNT`, an existing account the key is an owner of (for example one created by an app or by CDP). Without it, the account the key alone owns (Coinbase Smart Wallet v1.1, nonce 0). |
+| `RECTA_SMART_ACCOUNT_OWNER_INDEX` | `0` | With `RECTA_SMART_ACCOUNT`, the key's position among the account's owners. Any value other than `0` needs `RECTA_SMART_ACCOUNT_ADDRESS`. |
+| `RECTA_MAX_USEROP_OVERHEAD_GAS` | `1500000` | With `RECTA_SMART_ACCOUNT`, the most gas one user operation may spend besides its call (verification, pre-verification and any paymaster gas). An operation the bundler estimates above it is not signed. |
 | `RECTA_REFERRER` | none | The EVM address of whoever set this agent up (a template or framework author). See "Referral for integrators". A malformed address stops the server. |
 
 ## Tools
@@ -138,6 +144,32 @@ your address, once Recta's referral program is on (it starts together with fee c
 
 ## ElizaOS and other MCP hosts
 
+## Smart accounts
+
+If the agent's wallet is a Coinbase Smart Wallet on Base, set `RECTA_SMART_ACCOUNT=coinbase`, the owner's key in
+`RECTA_PRIVATE_KEY` and a Base bundler in `RECTA_BUNDLER_URL` (and `RECTA_PAYMASTER_URL` if one sponsors your gas).
+The server then speaks for the account, not for the key: the account is the `sender`, it holds the USDC, and it pays
+the fee. On start the server prints the account's address on stderr.
+
+- Recta accepts a smart account on Base only, so its transfers must start from Base (`source_network: base`). Any
+  other source is refused before anything is sent to Recta.
+- Requests are signed by the account: Recta asks the account itself on Base whether the signature holds (ERC-1271,
+  or ERC-6492 while it is not deployed yet).
+- A fee permit needs the account deployed on Base (Permit2 cannot deploy it). An account that is not deployed yet is
+  deployed by its first user operation, for example `recta_approve_fee`; until then the server refuses to sign a
+  permit (`account_not_deployed`).
+- Each checked route transaction is sent as one user operation with the committed call, its call gas limited to the
+  committed gas limit and its fees capped by the committed fee caps. The bundler and the paymaster prepare it, and the
+  server checks it again before the account signs: if either changed the call, the sender, the call gas, the fee caps
+  or the account's init code, or asks for more than `RECTA_MAX_USEROP_OVERHEAD_GAS`, nothing is signed. A failed
+  operation is reported as a failure even though the bundle that carried it succeeded. If its receipt does not arrive
+  in time, the server says so and names the operation: look it up before trying again.
+- Recta recognizes the operation in a bundle sent straight to the ERC-4337 EntryPoint (v0.6, v0.7 or v0.8), which is
+  what common bundlers do. A bundler that relays through another contract first is not recognized and the report is
+  refused.
+- The Permit2 approval sent by the account is not reported to Recta (it is not the committed transaction field by
+  field); Recta counts its cost at the committed upper bound, which can only understate your saving.
+
 ElizaOS agents load MCP servers through its MCP plugin: point it at `npx -y @recta/mcp` with the environment above,
 or at the hosted endpoint `https://api.recta.build/mcp` for the unsigned tools.
 
@@ -151,9 +183,10 @@ Every request this package sends carries the User-Agent `recta-mcp/<version>`, s
   transaction from you (`destination_execution: NONE`). This setting leaves out only routes that need you to
   complete a mint on the destination chain (CCTP with your own receive); the other limits are below.
 - The same limits as `@recta/client`: EVM sources and recipients only, and only the corridors and contracts pinned in
-  the release (a safety measure: it refuses to sign against a contract it does not know). The server signs with an EOA
-  key only; Recta's API also accepts smart accounts for transfers whose source is Base (ERC-1271; ERC-6492 before deployment for
-  requests only: paying a fee needs the account deployed on Base), through the API directly, not through this server yet.
+  the release (a safety measure: it refuses to sign against a contract it does not know).
+- Smart accounts: Coinbase Smart Wallet on Base only, with transfers that start from Base, sent through an ERC-4337
+  bundler you configure. Other smart accounts (Safe, Kernel and others) can use Recta's API directly or through
+  `@recta/client`'s `smartAccountSigner` with any viem smart account.
 - The source chain's max fee per gas is twice its current estimate when the agent evaluates, never above
   `RECTA_MAX_FEE_GWEI`; the priority fee is the current estimate, never above `RECTA_MAX_PRIORITY_FEE_GWEI`.
 

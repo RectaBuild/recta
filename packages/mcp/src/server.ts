@@ -6,7 +6,7 @@ import { createRectaClient, safeErrorText, RectaCheckError, RectaDebtError, Rect
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.8" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.9" } as const;
 /** Sent on every request this package makes (its own and the client's), so Recta can count real use of it apart from
  *  other clients (no address, no key). */
 export const MCP_USER_AGENT = `recta-mcp/${SERVER_INFO.version}`;
@@ -286,7 +286,7 @@ export function createLocalServer(options: LocalServerOptions) {
         const protocolVersion = typeof requested === "string" && (MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : MCP_PROTOCOL_VERSIONS[0];
         return ok({ protocolVersion, capabilities: { tools: {} }, serverInfo: SERVER_INFO, instructions: options.keyless === true
           ? "Running without a key: recta_fit says whether Recta covers a corridor, and recta_trial_evaluation, unsigned, whether a cheaper provable route exists for a transfer you would make anyway (baseline_provider). To get the route, the operator sets RECTA_PRIVATE_KEY of a dedicated wallet."
-          : "Before a cross-chain stablecoin transfer, call recta_evaluate with the route you would use anyway (baseline_provider). Use Recta's route only when it proves a saving; otherwise keep yours and nothing is owed." });
+          : `Before a cross-chain stablecoin transfer, call recta_evaluate with the route you would use anyway (baseline_provider). Use Recta's route only when it proves a saving; otherwise keep yours and nothing is owed.${options.signer.smartAccountChainId === undefined ? "" : " This wallet is a smart account on Base: Recta serves its transfers from Base (source_network base) only."}` });
       }
       case "ping":
         return ok({});

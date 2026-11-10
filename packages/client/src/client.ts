@@ -1,6 +1,6 @@
 import { keccak256, type Hex } from "viem";
 import { checkExecutionArtifact, type CheckedArtifact, type EvaluationRequestView } from "./artifact.js";
-import { ISSUED_AT_HEADER, PATHS, RECTA_ORIGIN, SIGNATURE_HEADER, SIGNED_REQUEST_PREFIX, SIGNER_HEADER, USER_AGENT } from "./constants.js";
+import { FEE_CHAIN_ID, ISSUED_AT_HEADER, PATHS, RECTA_ORIGIN, SIGNATURE_HEADER, SIGNED_REQUEST_PREFIX, SIGNER_CHAIN_HEADER, SIGNER_HEADER, SMART_ACCOUNT_SIGNED_REQUEST_PREFIX, USER_AGENT } from "./constants.js";
 import { RectaCheckError, RectaDebtError, RectaHttpError } from "./errors.js";
 import { checkFeePermit } from "./fee.js";
 import { assertFeeReady, feeReadiness, permit2ApprovalTransaction, routeReserveOf, safeErrorText, type FeeReadiness, type Permit2Approval } from "./funds.js";
@@ -44,6 +44,30 @@ export function signedRequestMessage(f: { readonly method: string; readonly path
   ].join("\n");
 }
 
+/** The text a smart account signs for one request (v2: it also names the signer and the chain), exactly as Recta's server
+ *  rebuilds it. The signer and chain stop a request signed for one account from passing for a sibling of the same owner. */
+export function smartAccountSignedRequestMessage(f: Parameters<typeof signedRequestMessage>[0] & { readonly signer: string; readonly chainId: number }): string {
+  return [
+    SMART_ACCOUNT_SIGNED_REQUEST_PREFIX,
+    `signer: ${f.signer.toLowerCase()}`,
+    `chain-id: ${f.chainId}`,
+    `method: ${f.method.toUpperCase()}`,
+    `path: ${f.path}`,
+    `idempotency-key: ${f.idempotencyKey}`,
+    `body-keccak256: ${f.bodyKeccak256.toLowerCase()}`,
+    `issued-at: ${f.issuedAt}`,
+  ].join("\n");
+}
+
+/** ERC-6492's magic suffix: a signature from an account that is not deployed yet. */
+const ERC6492_SUFFIX = "6492649264926492649264926492649264926492649264926492649264926492";
+
+/** A permit signature Recta can collect: never an ERC-6492 wrapper, which Permit2 cannot use (Fable B-4 on recta #15). */
+function permitSignature(signature: Hex): Hex {
+  if (signature.toLowerCase().endsWith(ERC6492_SUFFIX)) throw new RectaCheckError("account_not_deployed", "the signer returned an ERC-6492 signature (an account not deployed yet): Permit2 cannot use it, so it was not sent");
+  return signature;
+}
+
 interface Answer {
   readonly status: number;
   readonly body: unknown;
@@ -72,7 +96,7 @@ export type FeeOutcome =
   | { readonly kind: "DRY_RUN"; readonly amountUsdcAtomic: bigint; readonly typedData: RectaTypedData; readonly funds: FeeReadiness | null; readonly fundsError?: string };
 
 /**
- * Recta's flow for an agent that holds its own EOA: evaluate → authorizeFee → execute → report. Every step can be
+ * Recta's flow for an agent that holds its own EOA or smart account (on Base): evaluate → authorizeFee → execute → report. Every step can be
  * called alone. Nothing is signed or sent before this package's own checks pass (see `checkFeePermit` and
  * `checkExecutionArtifact`); they cannot be turned off.
  */
@@ -83,6 +107,18 @@ export function createRectaClient(options: RectaClientOptions) {
   const nowUnix = (): bigint => BigInt(Math.floor(now() / 1000));
   const payer = signer.address.toLowerCase();
   const referral = referrerQuery(options.referrer, payer);
+  const smart = signer.smartAccountChainId !== undefined;
+  if (smart && (signer.smartAccountChainId !== FEE_CHAIN_ID || typeof signer.isDeployed !== "function")) {
+    throw new RectaCheckError("smart_account", `a smart account signer must name Base (${FEE_CHAIN_ID}) and say whether it is deployed (smartAccountSigner does)`);
+  }
+  /** A fee or debt permit from a smart account: Permit2 asks the deployed account (ERC-1271) and cannot deploy it, so
+   *  Recta refuses an ERC-6492 permit. Nothing is signed until the account's code is on Base. */
+  async function assertPermitSignable(): Promise<void> {
+    if (!smart) return;
+    let deployed: boolean;
+    try { deployed = await signer.isDeployed!(); } catch (e) { throw new RectaCheckError("account_not_deployed", `could not read whether the smart account is deployed on Base: ${safeErrorText(e)}`); }
+    if (!deployed) throw new RectaCheckError("account_not_deployed", "the smart account is not deployed on Base yet, and a fee permit needs it deployed: its first user operation deploys it (e.g. the bounded Permit2 approval, feeApproval)");
+  }
   if (typeof (chain as Partial<RectaChainReader>).readFeeFunds !== "function") {
     // Since 0.1.4 (ASTRA T2) a reader must read the fee funds on Base; an older custom reader fails here, clearly.
     throw new RectaCheckError("chain_reader", "the chain reader has no readFeeFunds(owner): since @recta/client 0.1.4 it must read the payer's USDC balance and Permit2 allowance on Base (viemChainReader does)");
@@ -100,7 +136,9 @@ export function createRectaClient(options: RectaClientOptions) {
     if (idempotencyKey !== undefined) headers["idempotency-key"] = idempotencyKey;
     if (signed) {
       const issuedAt = Math.floor(now() / 1000);
-      const message = signedRequestMessage({ method, path, idempotencyKey: idempotencyKey ?? "", bodyKeccak256: keccak256(bytes), issuedAt });
+      const fields = { method, path, idempotencyKey: idempotencyKey ?? "", bodyKeccak256: keccak256(bytes), issuedAt };
+      const message = smart ? smartAccountSignedRequestMessage({ ...fields, signer: signer.address, chainId: FEE_CHAIN_ID }) : signedRequestMessage(fields);
+      if (smart) headers[SIGNER_CHAIN_HEADER] = String(FEE_CHAIN_ID);
       headers[SIGNER_HEADER] = signer.address;
       headers[ISSUED_AT_HEADER] = String(issuedAt);
       headers[SIGNATURE_HEADER] = await signer.signMessage(message);
@@ -124,6 +162,8 @@ export function createRectaClient(options: RectaClientOptions) {
   /** Step 1: a durable decision (free). Throws RectaDebtError when the sender owes a fee first. */
   async function evaluate(request: EvaluationRequestView & Record<string, unknown>, opts: { readonly idempotencyKey?: string } = {}): Promise<Record<string, unknown>> {
     if (typeof request.sender !== "string" || request.sender.toLowerCase() !== payer) throw new RectaCheckError("sender", "the request's sender must be the signer");
+    // Recta accepts a smart account on Base only (its address proves one account on one chain).
+    if (smart && request.source_network !== "base") throw new RectaCheckError("source_network", "a smart account's transfer must start from Base (source_network: base)");
     await walletPolicy();
     const a = await call("POST", `${PATHS.evaluations}${referral}`, request, opts.idempotencyKey ?? crypto.randomUUID());
     if (a.status === 402) throw new RectaDebtError(a.body, field(a.body, "debt_offer") ?? null);
@@ -176,7 +216,8 @@ export function createRectaClient(options: RectaClientOptions) {
       }
       // ASTRA T2: never sign a fee Recta could not collect (no USDC or no Permit2 allowance on Base).
       assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), checked.amount, reserve));
-      const signature = await signer.signTypedData(checked.typedData);
+      await assertPermitSignable();
+      const signature = permitSignature(await signer.signTypedData(checked.typedData));
       const s = await call("POST", `${PATHS.evaluations}/${id}/fee-authorization${referral}`, { signature, amount_usdc_atomic: checked.amount.toString() });
       if (s.status === 200 || s.status === 201) feeAmounts.set(id, checked.amount);
       if (s.status === 200 || s.status === 201) return { fee: { kind: "AUTHORIZED", amountUsdcAtomic: checked.amount, signature }, artifact: field(s.body, "artifact") };
@@ -212,9 +253,12 @@ export function createRectaClient(options: RectaClientOptions) {
   /**
    * Step 4: reports the executed route; Recta verifies the delivery on chain and records the saving and its 5 %.
    * `stage`: ACCRUED (verified and recorded), PENDING (not yet verifiable: report again later) or REFUSED (Recta will
-   * not accrue this execution; see `body.reason_code`).
+   * not accrue this execution; see `body.reason_code`). A smart account's approval is never reported: it is the
+   * account's user operation, not the committed transaction field by field, so Recta prices it at its committed upper
+   * bound (the saving can only be understated, never overstated).
    */
   async function report(resultId: string, originTxHash: Hex, approvalTxHash?: Hex): Promise<{ readonly stage: "ACCRUED" | "PENDING" | "REFUSED"; readonly body: Record<string, unknown> }> {
+    if (smart) approvalTxHash = undefined;
     const a = await call("POST", `${PATHS.evaluations}/${resultIdOf(resultId)}/execution`, { origin_tx_hash: originTxHash, ...(approvalTxHash === undefined ? {} : { approval_tx_hash: approvalTxHash }) });
     const body = a.body as Record<string, unknown>;
     if (a.status === 200 || a.status === 201) return { stage: "ACCRUED", body };
@@ -236,7 +280,8 @@ export function createRectaClient(options: RectaClientOptions) {
     const debtId = field(offer, "debt_id");
     if (typeof debtId !== "string") throw new RectaCheckError("debt", "the offer has no debt_id");
     assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), checked.amount));
-    const signature = await signer.signTypedData(checked.typedData);
+    await assertPermitSignable();
+    const signature = permitSignature(await signer.signTypedData(checked.typedData));
     const a = await call("POST", PATHS.feeDebts, { debt_id: debtId, deadline_unix: checked.deadline.toString(), signature });
     if (a.status !== 200 && a.status !== 201) throw new RectaHttpError(a.status, a.body);
     return a.body as Record<string, unknown>;

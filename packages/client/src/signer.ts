@@ -1,4 +1,6 @@
 import type { Account, Chain, Hex, PublicClient, Transport, TransactionSerializable, WalletClient } from "viem";
+import { concat } from "viem";
+import { formatUserOperationRequest, type BundlerClient, type SmartAccount } from "viem/account-abstraction";
 import { toAccount } from "viem/accounts";
 import { FEE_CHAIN_ID, PERMIT2, USDC_BASE } from "./constants.js";
 import { ERC20_READ_ABI, safeErrorText, type FeeFunds } from "./funds.js";
@@ -23,11 +25,21 @@ export interface RectaTypedData {
 }
 
 /**
- * What this package needs from a wallet, and nothing more. It never receives or stores a key. This package signs as
- * an EOA: its requests are EIP-191 signatures recovered to the sender's address (a smart account uses the API directly).
+ * What this package needs from a wallet, and nothing more. It never receives or stores a key. An EOA signs Recta's v1
+ * request text (EIP-191, recovered to the sender's address). A smart account (`smartAccountSigner`) signs the v2 text,
+ * which also names the account and Base, and Recta asks the account itself on Base whether the signature holds
+ * (ERC-1271, or ERC-6492 before it is deployed).
  */
 export interface RectaSigner {
   readonly address: Hex;
+  /**
+   * Present only for a smart account: the chain on which Recta checks its signatures. Recta accepts a smart account on
+   * Base only (8453), where its fee is collected, so its transfers must start from Base.
+   */
+  readonly smartAccountChainId?: typeof FEE_CHAIN_ID;
+  /** Smart account only: whether its code is on Base. A fee or debt permit is signed only once it is (Permit2 cannot
+   *  deploy an account, so Recta refuses an ERC-6492 permit). */
+  isDeployed?(): Promise<boolean>;
   signMessage(message: string): Promise<Hex>;
   signTypedData(typedData: RectaTypedData): Promise<Hex>;
   /** Sends one transaction on `tx.chainId` and returns its hash. */
@@ -149,6 +161,104 @@ export function cdpSigner(args: {
       return sendWith(args.walletClientFor(tx.chainId), account, tx);
     },
   };
+}
+
+/** The most gas a user operation may spend besides its call (verification, pre-verification and any paymaster's own
+ *  verification and post-op), unless the operator sets `maxOverheadGas`. Covers deploying a Coinbase Smart Wallet. */
+export const DEFAULT_USER_OPERATION_OVERHEAD_GAS = 1_500_000n;
+
+/** How long to wait for a user operation's receipt before giving up (it may still be included later). */
+const USER_OPERATION_RECEIPT_TIMEOUT_MS = 600_000;
+
+/**
+ * A RectaSigner from a viem smart account on Base (e.g. `toCoinbaseSmartAccount` from `viem/account-abstraction`) and
+ * an ERC-4337 bundler client on Base (give the bundler client a paymaster to sponsor gas, if you have one).
+ *
+ * Requests and fee permits are signed by the account (viem wraps them in ERC-6492 while it is not deployed; Recta then
+ * accepts requests, and this package refuses to sign a fee permit until the account is deployed). Each route
+ * transaction, after this package's checks like any other, becomes one user operation, prepared by the bundler client
+ * (and its paymaster) and then checked again before the account signs it (Fable A-1/M-1 on recta #15): the sender is the
+ * account, the call data is exactly the committed call (`to`, `data`, `value`), the call gas is the committed gas limit,
+ * the fees are the committed caps, there is no init code once the account is deployed (and only the account's own
+ * factory call before), and verification plus pre-verification plus paymaster gas stays within `maxOverheadGas`. A
+ * bundler or paymaster that changes any of it gets nothing signed. The checked operation is signed and sent as is.
+ * The returned hash is the bundle's transaction once the operation itself succeeded; a failed operation throws.
+ */
+export function smartAccountSigner(args: {
+  readonly account: SmartAccount;
+  readonly bundlerClient: Pick<BundlerClient, "prepareUserOperation" | "request" | "waitForUserOperationReceipt">;
+  readonly maxOverheadGas?: bigint;
+}): RectaSigner {
+  const { account, bundlerClient } = args;
+  const maxOverheadGas = args.maxOverheadGas ?? DEFAULT_USER_OPERATION_OVERHEAD_GAS;
+  const chainId = account.client.chain?.id;
+  if (chainId !== FEE_CHAIN_ID) throw new Error(`the smart account's client is on chain ${String(chainId)}: Recta accepts smart accounts on Base (${FEE_CHAIN_ID}) only`);
+  return {
+    address: account.address,
+    smartAccountChainId: FEE_CHAIN_ID,
+    isDeployed: () => account.isDeployed(),
+    signMessage: (message) => account.signMessage({ message }),
+    signTypedData: (td) => account.signTypedData(td as never),
+    sendTransaction: async (tx) => {
+      if (tx.chainId !== FEE_CHAIN_ID) throw new Error(`a smart account sends on Base (${FEE_CHAIN_ID}) only, not on chain ${tx.chainId}`);
+      const call = { to: tx.to, data: tx.data, value: tx.value };
+      // Fable B-5 on recta #15: the nonce is read here and must come back unchanged.
+      const nonce = await account.getNonce();
+      const op = (await bundlerClient.prepareUserOperation({
+        account,
+        calls: [call],
+        nonce,
+        callGasLimit: tx.gas,
+        maxFeePerGas: tx.maxFeePerGas,
+        maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+      } as never)) as unknown as Record<string, unknown>;
+      await checkPreparedOperation(op, account, call, tx, nonce, maxOverheadGas);
+      const signature = await account.signUserOperation(op as never);
+      const hash = (await bundlerClient.request({
+        method: "eth_sendUserOperation",
+        params: [formatUserOperationRequest({ ...op, signature } as never), account.entryPoint.address],
+      } as never, { retryCount: 0 })) as Hex;
+      let receipt;
+      try {
+        receipt = await bundlerClient.waitForUserOperationReceipt({ hash, timeout: USER_OPERATION_RECEIPT_TIMEOUT_MS });
+      } catch (e) {
+        // Fable B-2: the operation may still be included; sending again could move the funds twice.
+        throw new Error(`user operation ${hash} was sent but its receipt is not available yet: do not send again, look the operation up first (${safeErrorText(e)})`);
+      }
+      if (!receipt.success) throw new Error(`user operation ${hash} failed${receipt.reason === undefined ? "" : `: ${receipt.reason}`}`);
+      return receipt.receipt.transactionHash;
+    },
+  };
+}
+
+/** The gas fields counted against `maxOverheadGas`: each must be a bigint when present (Fable M-3 on recta #15: a paymaster
+ *  answer is spread onto the operation untyped, and a hex string or JSON number would otherwise count as 0 here and still
+ *  be signed at its real value). The first two must be present. */
+const OVERHEAD_GAS_FIELDS = ["verificationGasLimit", "preVerificationGas", "paymasterVerificationGasLimit", "paymasterPostOpGasLimit"] as const;
+const sameHex = (a: unknown, b: unknown): boolean => typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase();
+
+/** The prepared user operation is the committed call and nothing else, within the gas and fee bounds; or it throws. */
+async function checkPreparedOperation(op: Record<string, unknown>, account: SmartAccount, call: { to: Hex; data: Hex; value: bigint }, tx: RectaTransaction, nonce: bigint, maxOverheadGas: bigint): Promise<void> {
+  const refuse = (what: string): never => { throw new Error(`the bundler or paymaster changed the user operation's ${what}: nothing was signed`); };
+  if (!sameHex(op["sender"], account.address)) refuse("sender");
+  if (!sameHex(op["callData"], await account.encodeCalls([call]))) refuse("call data");
+  if (op["callGasLimit"] !== tx.gas) refuse("call gas limit");
+  if (op["maxFeePerGas"] !== tx.maxFeePerGas || op["maxPriorityFeePerGas"] !== tx.maxPriorityFeePerGas) refuse("fee caps");
+  if (op["nonce"] !== nonce) refuse("nonce");
+  if (op["authorization"] !== undefined) refuse("authorization");
+  const factory = await account.getFactoryArgs();
+  if (account.entryPoint.version === "0.6") {
+    const expected = factory.factory !== undefined && factory.factoryData !== undefined ? concat([factory.factory, factory.factoryData]) : "0x";
+    if (!sameHex(op["initCode"] ?? "0x", expected)) refuse("init code");
+  } else if (!(sameHex(op["factory"] ?? "0x", factory.factory ?? "0x") && sameHex(op["factoryData"] ?? "0x", factory.factoryData ?? "0x"))) refuse("factory");
+  let overhead = 0n;
+  for (const [i, name] of OVERHEAD_GAS_FIELDS.entries()) {
+    const v = op[name];
+    if (v === undefined && i >= 2) continue;
+    if (typeof v !== "bigint" || v < 0n) refuse(name);
+    overhead += v as bigint;
+  }
+  if (overhead > maxOverheadGas) throw new Error(`the user operation's verification and pre-verification gas (${overhead}) exceeds the limit ${maxOverheadGas}: nothing was signed`);
 }
 
 /** A RectaChainReader from one viem public client per chain (`publicClientFor(8453)` reads the fee funds on Base). */

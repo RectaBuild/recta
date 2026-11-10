@@ -50,8 +50,8 @@ const result = await recta.run(request);
 your signer's address. Each step is also available alone: `evaluate`, `authorizeFee`, `check`, `execute`, `report`,
 `ledger`, `payDebt`, `feeFunds`, `feeApproval`.
 
-This package signs with an EOA: its signed requests are EIP-191 signatures recovered to the sender's address. A smart
-account can use Recta's API directly (see Limits below).
+An EOA signs its requests as EIP-191 signatures recovered to the sender's address. A smart account on Base signs
+through `smartAccountSigner` (see "Smart accounts").
 
 ## Referral for integrators
 
@@ -64,6 +64,49 @@ changes it afterwards. You earn 20 % of the fees Recta actually collects from th
 The referrer travels in the query of the agent's own signed requests, so nobody relaying them can add, drop or change
 it. It is ignored when it is the agent's own address. Terms and your balance: `GET /v1/referrals/balance`, signed by
 your address, once Recta's referral program is on (it starts together with fee collection).
+
+### Smart accounts
+
+A smart account on Base works through `smartAccountSigner`: any viem smart account (for example
+`toCoinbaseSmartAccount` from `viem/account-abstraction`) and an ERC-4337 bundler client on Base, with a paymaster if
+one sponsors your gas:
+
+```ts
+import { createPublicClient, http } from "viem";
+import { base } from "viem/chains";
+import { createBundlerClient, toCoinbaseSmartAccount } from "viem/account-abstraction";
+import { privateKeyToAccount } from "viem/accounts";
+import { createRectaClient, smartAccountSigner, viemChainReader } from "@recta/client";
+
+const client = createPublicClient({ chain: base, transport: http(BASE_RPC) });
+const account = await toCoinbaseSmartAccount({ client, owners: [privateKeyToAccount(OWNER_KEY)], version: "1.1" });
+const bundlerClient = createBundlerClient({ account, client, transport: http(BUNDLER_URL) });
+
+const recta = createRectaClient({
+  signer: smartAccountSigner({ account, bundlerClient }),
+  chain: viemChainReader((chainId) => publicClients[chainId]),
+  limits: { maxPermitUsdcAtomic: 5_000_000n, maxNativeValueWei: 10n ** 15n, minOutputBps: 9900 },
+});
+```
+
+- The account is the `sender`, holds the USDC and pays the fee. Recta accepts a smart account on Base only, so its
+  transfers must start from Base; any other source is refused before any request.
+- Requests carry `x-recta-signer-chain: 8453` and are signed in Recta's v2 text, which also names the account and the
+  chain. Recta asks the account on Base whether the signature holds (ERC-1271, or ERC-6492 while it is not deployed).
+- A fee or debt permit is signed only once the account is deployed on Base (Permit2 cannot deploy it): otherwise
+  `RectaCheckError` `account_not_deployed`. Its first user operation deploys it, for example the bounded approval from
+  `feeApproval()`.
+- Each checked route transaction is one user operation: the committed call, call gas limited to the committed gas
+  limit, fees capped by the committed fee caps. The bundler client (and its paymaster) prepares it, and the signer
+  checks it again before the account signs. Nothing is signed if they changed the call, the sender, the call gas, the
+  fee caps or the init code, or if verification, pre-verification and paymaster gas exceed `maxOverheadGas` (default
+  `DEFAULT_USER_OPERATION_OVERHEAD_GAS`, 1 500 000). A failed operation throws even when its bundle transaction
+  succeeded. A receipt that does not arrive in time throws an error naming the operation: look it up before sending
+  again.
+- Recta recognizes the operation in a bundle sent straight to an ERC-4337 EntryPoint (v0.6, v0.7 or v0.8). A bundler
+  that relays through another contract first is not recognized.
+- `report` never sends a smart account's `approval_tx_hash`: the approval is the account's operation, not the
+  committed transaction field by field, so Recta counts it at its committed upper bound.
 
 ### Coinbase CDP accounts
 
@@ -178,9 +221,9 @@ Every request this package sends carries the User-Agent `recta-client/<version>`
 ## Limits of this version
 
 - EVM sources and EVM recipients only. Solana, Tron and Bitcoin routes, Relay and deBridge are refused.
-- This package signs with an EOA key only. Recta's API also accepts smart accounts for transfers whose source is Base (ERC-1271; ERC-6492 before deployment for
-  requests only: paying a fee needs the account deployed on Base), but this package cannot sign for one yet: a smart account
-  calls the API directly (see `https://api.recta.build/llms.txt`).
+- Smart accounts on Base only, with transfers that start from Base (Recta's own rule: an address proves one account
+  on one chain). The route is sent through an ERC-4337 bundler; an account that is only driven by its owner's direct
+  calls (no bundler) is not supported by `smartAccountSigner`.
 - Only the corridors and contracts pinned in the release, as a safety measure: the package refuses to sign against a
   contract it does not know. A corridor or contract Recta adds later is served by the API at once, but refused by
   this package until a new release pins it.

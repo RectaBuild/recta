@@ -9,7 +9,7 @@
 export const RECTA_ORIGIN = "https://api.recta.build";
 
 /** This package's version (equal to package.json, checked in CI). */
-export const CLIENT_VERSION = "0.1.5";
+export const CLIENT_VERSION = "0.1.6";
 /** Sent on every request so Recta can count real use of this package apart from other clients (no address, no key). */
 export const USER_AGENT = `recta-client/${CLIENT_VERSION}`;
 
@@ -44,8 +44,11 @@ export const FEE_PERMIT_TYPES = {
   ],
 } as const;
 
-/** Signed requests from this package (EIP-191 `personal_sign` by the sender's EOA; smart accounts sign v2 via the API). */
+/** Signed requests from this package: an EOA signs v1 (EIP-191 `personal_sign`); a smart account signs v2, which also
+ *  names the signer and the chain, with the signer-chain header (checked by the account on Base: ERC-1271 / ERC-6492). */
 export const SIGNED_REQUEST_PREFIX = "Recta signed request v1";
+export const SMART_ACCOUNT_SIGNED_REQUEST_PREFIX = "Recta signed request v2";
+export const SIGNER_CHAIN_HEADER = "x-recta-signer-chain";
 export const SIGNER_HEADER = "x-recta-signer";
 export const ISSUED_AT_HEADER = "x-recta-issued-at";
 export const SIGNATURE_HEADER = "x-recta-signature";
