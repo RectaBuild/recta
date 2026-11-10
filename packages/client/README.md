@@ -182,7 +182,8 @@ Every request this package sends carries the User-Agent `recta-client/<version>`
   requests only: paying a fee needs the account deployed on Base), but this package cannot sign for one yet: a smart account
   calls the API directly (see `https://api.recta.build/llms.txt`).
 - Only the corridors and contracts pinned in the release, as a safety measure: the package refuses to sign against a
-  contract it does not know. The API itself has no such limit.
+  contract it does not know. A corridor or contract Recta adds later is served by the API at once, but refused by
+  this package until a new release pins it.
 
 ## Provenance
 

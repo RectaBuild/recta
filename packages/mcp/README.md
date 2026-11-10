@@ -148,8 +148,8 @@ Every request this package sends carries the User-Agent `recta-mcp/<version>`, s
 ## Limits of this version
 
 - The server sends only source-chain transactions, so it asks Recta only for routes that need no destination
-  transaction from you (`destination_execution: NONE`). Only routes that need you to complete a mint on the
-  destination chain (CCTP with your own receive) are left out; every other route is offered.
+  transaction from you (`destination_execution: NONE`). This setting leaves out only routes that need you to
+  complete a mint on the destination chain (CCTP with your own receive); the other limits are below.
 - The same limits as `@recta/client`: EVM sources and recipients only, and only the corridors and contracts pinned in
   the release (a safety measure: it refuses to sign against a contract it does not know). The server signs with an EOA
   key only; Recta's API also accepts smart accounts for transfers whose source is Base (ERC-1271; ERC-6492 before deployment for
