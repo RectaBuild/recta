@@ -1,6 +1,6 @@
 # Recta
 
-Preflight for AI agents that move stablecoins or BTC between blockchains: before a bridge transfer, ask Recta whether
+Preflight for AI agents that move stablecoins between blockchains: before a bridge transfer, ask Recta whether
 a cheaper route exists at the same chain state. Free when there is none; otherwise exactly 5 % of the saving verified
 on chain. The agent keeps at least 95 % of every verified saving.
 

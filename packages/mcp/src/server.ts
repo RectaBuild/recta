@@ -54,8 +54,8 @@ const EVALUATE_INPUT = {
   type: "object",
   properties: {
     ...ROUTE,
-    amount: { type: "string", description: "Whole units, e.g. \"100\". Recta accepts from 3.5, with no upper limit." },
-    baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included) (thorchain or chainflip from Bitcoin). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
+    amount: { type: "string", description: "How much of source_asset to send, in whole tokens (not cents, not wei): \"100\" with USDC means 100 USDC. Minimum 3.5 for stablecoins (about 3.5 USD). No maximum." },
+    baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
     recipient: { type: "string", description: "Destination address; defaults to the local wallet." },
     guarantee_class: { type: "string", enum: ["COMMITTED_ENFORCED", "ANY"], description: "Default ANY." },
     latency_class: { type: "string", enum: ["SECONDS", "MINUTES", "FINALITY_BOUND", "ANY"], description: "Default ANY." },
@@ -86,7 +86,7 @@ export const TOOLS = [
   },
   {
     name: "recta_trial_evaluation",
-    description: "Free, unsigned and stored nowhere: the same question as recta_evaluate with the same arguments, answered only with whether a cheaper provable route exists, the saving (lower bound, USDC) and Recta's 5 % of it. Names no route and returns no result_id; 3 a day per address. Use it to see whether Recta is worth a signature. Works without a key (give sender, or set RECTA_ADDRESS).",
+    description: "Free, unsigned and stored nowhere: the same question as recta_evaluate with the same arguments, answered only with whether a cheaper provable route exists, the saving (lower bound, USDC) and Recta's 5 % of it. Names no route and returns no result_id; 3 a day per IP address. Use it to see whether Recta is worth a signature. Works without a key (give sender, or set RECTA_ADDRESS).",
     inputSchema: TRIAL_INPUT,
   },
   {
@@ -106,7 +106,7 @@ export const TOOLS = [
   },
   {
     name: "recta_fee_funds",
-    description: "Free, signs nothing: whether the local wallet can pay a Recta fee. Shows its USDC balance on Base and its USDC allowance to Permit2, against amount_usdc (default: the operator's fee cap). A fee permit is only signed, and a route only sent, when both cover the permit (plus the transfer itself when it starts from Base USDC), so a route never executes with a fee Recta cannot collect.",
+    description: "Free, signs nothing: whether the local wallet can pay a Recta fee. Shows its USDC balance on Base and its USDC allowance to Permit2, against amount_usdc (default: the operator's fee cap). A fee permit is only signed, and a route only sent, when both cover the permit (if the transfer itself starts from USDC on Base, the balance must cover the transfer plus the fee), so a route never executes with a fee Recta cannot collect.",
     inputSchema: { type: "object", properties: { amount_usdc: { type: "string", description: "USDC to check against, e.g. \"0.5\" (the fee ceiling recta_preview shows); default the operator's fee cap." } }, additionalProperties: false },
   },
   {

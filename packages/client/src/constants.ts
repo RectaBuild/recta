@@ -9,7 +9,7 @@
 export const RECTA_ORIGIN = "https://api.recta.build";
 
 /** This package's version (equal to package.json, checked in CI). */
-export const CLIENT_VERSION = "0.1.6";
+export const CLIENT_VERSION = "0.1.7";
 /** Sent on every request so Recta can count real use of this package apart from other clients (no address, no key). */
 export const USER_AGENT = `recta-client/${CLIENT_VERSION}`;
 

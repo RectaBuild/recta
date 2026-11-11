@@ -60,7 +60,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@recta/client": "0.1.6",
+    "@recta/client": "0.1.7",
     "viem": "2.56.3"
   },
   "devDependencies": {
