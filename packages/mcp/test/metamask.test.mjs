@@ -677,7 +677,7 @@ test("P-3: recover never reads absence as 'not sent': open, failed or missing ev
     ["an MFA request still open", (w) => w.jobs.push(job(w, { pollingId: "j", status: "AWAITING_MFA" })), /still open/],
     ["a request that FAILED without a hash", (w) => w.jobs.push(job(w, { pollingId: "j", status: "FAILED" })), /ended FAILED without a hash/],
     ["no request and the nonce unused", () => {}, /nonce 8 of this wallet is not used yet.*does not prove/],
-    ["a hash MetaMask gave that the chain does not know yet", (w) => w.jobs.push(job(w, { pollingId: "j", status: "BROADCASTED", txHash: TRANSFER_HASH })), /not on chain 8453 yet \(that is not proof/],
+    ["a hash MetaMask gave that the chain does not know yet", (w) => w.jobs.push(job(w, { pollingId: "j", status: "BROADCASTED", txHash: TRANSFER_HASH })), /chain does not show it yet \(that is not proof/],
     ["the nonce used, by a transaction not found", (w) => { w.mined.set(`0x${"99".repeat(32)}`, { i: 60, tx: transferOnChain({ nonce: 3 }) }); }, /nonce 8 of this wallet has been used .*pass it with --tx-hash/],
   ];
   for (const [what, arrange, evidence] of cases) {
@@ -875,4 +875,24 @@ test("L-1: a lock file without a pid yet is busy, not stale; a dead holder's loc
   writeFileSync(lock, "2147483646");
   assert.equal((await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f)).execution_state, "SENT");
   assert.equal(existsSync(lock), false, "released after the run");
+});
+
+test("X-1: a hash MetaMask gave for the attempt, not yet on chain, blocks NOT_SENT by a taken nonce (server and byok)", async () => {
+  const pendingHash = `0x${"c1".repeat(32)}`;
+  const mine = `0x${"c2".repeat(32)}`;
+  for (const [mode, arrange] of [
+    ["server", (w) => w.jobs.push(job(w, { pollingId: "j", status: "BROADCASTED", txHash: pendingHash }))],
+    ["byok", (w) => w.jobs.push(job(w, { pollingId: "j", status: "BROADCASTED", txHash: pendingHash }))],
+    ["byok, hash in the journal", null],
+  ]) {
+    const w = wallet(arrange === null ? { status: (i) => (i === 1 ? "CONFIRMATION_TRACKING_EXPIRED" : "CONFIRMED") } : { ...dies, mode: mode === "server" ? "server" : "byok" });
+    await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch(() => {});
+    if (arrange === null) w.mined.delete(`0x${"02".repeat(32)}`); // MetaMask's hash, not on chain yet
+    else arrange(w);
+    w.mined.set(mine, { i: 95, tx: { ...transferOnChain(), to: account.address, input: "0x", nonce: 8 } });
+    const out = await recoverRun(w, { "tx-hash": mine });
+    assert.equal(out.attempts[0].state, "UNKNOWN", mode);
+    assert.equal(out.blocked, true, mode);
+    assert.match(out.attempts[0].evidence, /MetaMask gave hash 0x[0-9a-f]{64} for this attempt and the chain does not show it yet/, mode);
+  }
 });

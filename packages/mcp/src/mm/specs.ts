@@ -359,10 +359,17 @@ async function recover(env: RunEnv, flags: Readonly<Record<string, unknown>>): P
     let next: JournalAttempt = { ...a, updated_at: now, ...(job?.pollingId === undefined ? {} : { mm_job: job.pollingId }) };
     let resolved = false;
     const notes: string[] = [];
+    // Fable X-1 on #19: a hash MetaMask gave for this attempt that the chain does not show yet may still be mined (on
+    // whatever nonce MetaMask used): while one exists, a taken nonce proves nothing.
+    const unseenFromMetaMask: string[] = [];
     for (const { hash, tagged: fromMetaMask } of candidates) {
       let tx: Awaited<ReturnType<ReturnType<MetaMaskPublicClientFor>["getTransaction"]>> | undefined;
       try { tx = await client.getTransaction({ hash: hash as Hex }); } catch { tx = undefined; }
-      if (tx === undefined || tx === null) { notes.push(`${hash} is not on chain ${a.chain_id} yet (that is not proof it was never sent)`); continue; }
+      if (tx === undefined || tx === null) {
+        if (fromMetaMask) unseenFromMetaMask.push(hash);
+        notes.push(fromMetaMask ? `MetaMask gave hash ${hash} for this attempt and the chain does not show it yet (that is not proof it was never sent)` : `${hash} is not on chain ${a.chain_id} yet (that is not proof it was never sent)`);
+        continue;
+      }
       if (tx.from.toLowerCase() !== a.wallet) { notes.push(`${hash} was sent from ${tx.from}, not from this wallet`); continue; }
       const same = (tx.to ?? "").toLowerCase() === a.to && keccak256(tx.input) === a.data_keccak && tx.value.toString() === a.value;
       // Fable L-3: a found hash is this attempt only on its bound nonce; one MetaMask gave for this request is, even on
@@ -381,12 +388,12 @@ async function recover(env: RunEnv, flags: Readonly<Record<string, unknown>>): P
         resolved = true;
         break;
       }
-      if (!same && tx.nonce === a.nonce && tx.blockNumber !== null && noOpenRequest) {
+      if (!same && tx.nonce === a.nonce && tx.blockNumber !== null && noOpenRequest && unseenFromMetaMask.length === 0) {
         next = { ...next, state: "NOT_SENT", evidence: `this attempt was bound to nonce ${a.nonce}, which another mined transaction of this wallet took (${hash}), and MetaMask holds no request that could still sign it` };
         resolved = true;
         break;
       }
-      if (!same) notes.push(`${hash} is another transaction of this wallet (nonce ${tx.nonce})${tx.nonce === a.nonce && !noOpenRequest ? `; it took nonce ${a.nonce}, but ${state === undefined ? "MetaMask's state could not be read" : job === undefined ? "MetaMask's request for this attempt was not found" : "MetaMask's request for this attempt is still open"}, so that is not proof` : ""}`);
+      if (!same) notes.push(`${hash} is another transaction of this wallet (nonce ${tx.nonce})${tx.nonce === a.nonce && unseenFromMetaMask.length > 0 ? `; it took nonce ${a.nonce}, but MetaMask's hash ${unseenFromMetaMask.join(", ")} for this attempt may still be mined, so that is not proof` : ""}${tx.nonce === a.nonce && unseenFromMetaMask.length === 0 && !noOpenRequest ? `; it took nonce ${a.nonce}, but ${state === undefined ? "MetaMask's state could not be read" : job === undefined ? "MetaMask's request for this attempt was not found" : "MetaMask's request for this attempt is still open"}, so that is not proof` : ""}`);
     }
     if (!resolved) {
       if (job !== undefined && jobStatus !== undefined && JOB_UNSIGNED.has(jobStatus) && job.txHash === undefined && a.hash === undefined) {
