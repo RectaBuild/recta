@@ -63,13 +63,18 @@ wallet's funds.
 | `RECTA_MAX_USEROP_OVERHEAD_GAS` | `1500000` | With `RECTA_SMART_ACCOUNT`, the most gas one user operation may spend besides its call (verification, pre-verification and any paymaster gas). An operation the bundler estimates above it is not signed. |
 | `RECTA_REFERRER` | none | The EVM address of whoever set this agent up (a template or framework author). See "Referral for integrators". A malformed address stops the server. |
 
+## Amount
+
+`amount` is how much of `source_asset` to send, in whole tokens (not cents, not wei): `"100"` with USDC means 100 USDC.
+The minimum is 3.5 for stablecoins (about 3.5 USD). There is no maximum.
+
 ## Tools
 
 | Tool | Signs or sends | What it does |
 | --- | --- | --- |
 | `recta_fit` | nothing | Does Recta cover this corridor, and which contracts would a route touch? |
 | `recta_evaluate` | a request signature | Asks Recta whether a cheaper route than `baseline_provider` can be proven. Free. |
-| `recta_trial_evaluation` | nothing | The same question unsigned: only whether a saving exists, its amount and Recta's 5 %. No route, nothing stored, 3 a day per address. Without a key, pass `sender` (or set `RECTA_ADDRESS`). |
+| `recta_trial_evaluation` | nothing | The same question unsigned: only whether a saving exists, its amount and Recta's 5 %. No route, nothing stored, 3 a day per IP address. Without a key, pass `sender` (or set `RECTA_ADDRESS`). |
 | `recta_preview` | a request signature | Shows the fee ceiling Recta asks you to authorize, after the local permit check, and whether the wallet can pay it. With collection on, the transactions appear only after the permit is signed. |
 | `recta_fee_funds` | nothing | The wallet's USDC balance on Base and its USDC allowance to Permit2, against `amount_usdc` (default `RECTA_MAX_FEE_USDC`). |
 | `recta_approve_fee` | one approval | Sends `USDC.approve(Permit2, amount)` on Base, at most `RECTA_MAX_FEE_USDC`, never unlimited. Only with `RECTA_ALLOW_EXECUTE=yes`. |
@@ -144,6 +149,9 @@ your address, once Recta's referral program is on (it starts together with fee c
 
 ## ElizaOS and other MCP hosts
 
+ElizaOS agents load MCP servers through its MCP plugin: point it at `npx -y @recta/mcp` with the environment above,
+or at the hosted endpoint `https://api.recta.build/mcp` for the unsigned tools.
+
 ## Smart accounts
 
 If the agent's wallet is a Coinbase Smart Wallet on Base, set `RECTA_SMART_ACCOUNT=coinbase`, the owner's key in
@@ -169,9 +177,6 @@ the fee. On start the server prints the account's address on stderr.
   refused.
 - The Permit2 approval sent by the account is not reported to Recta (it is not the committed transaction field by
   field); Recta counts its cost at the committed upper bound, which can only understate your saving.
-
-ElizaOS agents load MCP servers through its MCP plugin: point it at `npx -y @recta/mcp` with the environment above,
-or at the hosted endpoint `https://api.recta.build/mcp` for the unsigned tools.
 
 ## What each request identifies
 
