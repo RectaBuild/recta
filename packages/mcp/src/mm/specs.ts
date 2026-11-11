@@ -336,49 +336,57 @@ async function recover(env: RunEnv, flags: Readonly<Record<string, unknown>>): P
   const all = journal.read();
   const open = all.filter(unresolved);
   if (given !== undefined && forId === undefined && open.length > 1) throw new RectaCheckError("input", `there are ${open.length} unresolved attempts: pass --attempt-id with --tx-hash`);
-  const jobs = mmJobs(env.ctx);
-  const claimed = new Set(all.flatMap((a) => (a.mm_job === undefined ? [] : [a.mm_job])));
+  // Fable V-1 (2) on #19: whether MetaMask's state was really read; an unreadable one proves nothing.
+  const state = mmState(env.ctx);
   const results: JournalAttempt[] = [];
   for (const a of open) {
     const client = env.ctx.publicClient(a.chain_id);
     const now = new Date().toISOString();
-    // MetaMask's request for this attempt: the one recorded, or the only new transaction request on its chain.
-    let job = a.mm_job === undefined ? undefined : jobs.find((j) => j.pollingId === a.mm_job);
-    let ambiguous = false;
-    if (job === undefined && a.mm_job === undefined) {
-      const fresh = jobs.filter((j) => typeof j.pollingId === "string" && !a.mm_jobs_before.includes(j.pollingId) && !claimed.has(j.pollingId) && (j.chainId === undefined || j.chainId === a.chain_id) && (j.kind === undefined || /tx|transaction/i.test(j.kind)) && (j.submittedAt === undefined || Date.parse(j.submittedAt) >= Date.parse(a.created_at) - 60_000));
-      if (fresh.length === 1) job = fresh[0];
-      ambiguous = fresh.length > 1;
-    }
+    // MetaMask's request for this attempt: the one whose intent carries the attempt's tag (Fable V-1 fix 2).
+    const tagged = (state?.jobs ?? []).filter((j) => typeof j.intent === "string" && j.intent.includes(`Recta ${a.tag}:`));
+    const job = tagged.length === 1 ? tagged[0] : undefined;
+    const ambiguous = tagged.length > 1;
     const jobStatus = typeof job?.status === "string" ? job.status : undefined;
     const jobOpen = job !== undefined && (jobStatus === undefined || !JOB_TERMINAL.has(jobStatus));
-    const hashes = [...new Set([a.hash, typeof job?.txHash === "string" && HASH.test(job.txHash) ? job.txHash : undefined, given !== undefined && (forId === undefined || forId === a.id) ? given : undefined].filter((h): h is string => h !== undefined).map((h) => h.toLowerCase()))];
-    let next: Omit<JournalAttempt, "id" | "command" | "created_at" | "wallet" | "chain_id" | "to" | "data_keccak" | "value" | "gas" | "max_fee_per_gas" | "max_priority_fee_per_gas" | "nonce" | "approval" | "economic" | "mm_jobs_before"> & Partial<JournalAttempt> = { ...a, updated_at: now, ...(job?.pollingId === undefined ? {} : { mm_job: job.pollingId }) };
+    // No request of MetaMask's can still sign this attempt: its tagged job ended, or the wallet signs at once (byok:
+    // MetaMask keeps no request to sign later, and a copy signed before the process died carries the bound nonce).
+    const noOpenRequest = state !== undefined && !ambiguous && (job !== undefined ? !jobOpen : a.wallet_mode === "byok");
+    // Hashes MetaMask gave for this very request, then one the agent found (checked, never trusted).
+    const candidates: { readonly hash: string; readonly tagged: boolean }[] = [];
+    for (const [h, t] of [[a.hash, true], [typeof job?.txHash === "string" && HASH.test(job.txHash) ? job.txHash : undefined, true], [given !== undefined && (forId === undefined || forId === a.id) ? given : undefined, false]] as const) {
+      if (h !== undefined && !candidates.some((c) => c.hash === h.toLowerCase())) candidates.push({ hash: h.toLowerCase(), tagged: t });
+    }
+    let next: JournalAttempt = { ...a, updated_at: now, ...(job?.pollingId === undefined ? {} : { mm_job: job.pollingId }) };
     let resolved = false;
     const notes: string[] = [];
-    for (const hash of hashes) {
+    for (const { hash, tagged: fromMetaMask } of candidates) {
       let tx: Awaited<ReturnType<ReturnType<MetaMaskPublicClientFor>["getTransaction"]>> | undefined;
       try { tx = await client.getTransaction({ hash: hash as Hex }); } catch { tx = undefined; }
       if (tx === undefined || tx === null) { notes.push(`${hash} is not on chain ${a.chain_id} yet (that is not proof it was never sent)`); continue; }
       if (tx.from.toLowerCase() !== a.wallet) { notes.push(`${hash} was sent from ${tx.from}, not from this wallet`); continue; }
-      const ours = (tx.to ?? "").toLowerCase() === a.to && keccak256(tx.input) === a.data_keccak && tx.value.toString() === a.value;
+      const same = (tx.to ?? "").toLowerCase() === a.to && keccak256(tx.input) === a.data_keccak && tx.value.toString() === a.value;
+      // Fable L-3: a found hash is this attempt only on its bound nonce; one MetaMask gave for this request is, even on
+      // another nonce (then MetaMask did not keep the nonce, and the evidence says so).
+      const ours = same && (tx.nonce === a.nonce || fromMetaMask);
+      if (same && !ours) notes.push(`${hash} has this attempt's content but nonce ${tx.nonce}, not ${a.nonce}: an earlier identical transaction, not this attempt`);
       if (ours) {
+        const kept = tx.nonce === a.nonce ? "" : ` (mined on nonce ${tx.nonce}, not the bound ${a.nonce})`;
         let status: string | undefined;
         try { status = (await client.getTransactionReceipt({ hash: hash as Hex })).status; } catch { status = undefined; }
         next = status === undefined
-          ? { ...next, state: "SENT", chain_status: "PENDING", hash, evidence: `${hash} is this attempt's transaction, not yet mined` }
+          ? { ...next, state: "SENT", chain_status: "PENDING", hash, evidence: `${hash} is this attempt's transaction${kept}, not yet mined` }
           : status === "success"
-            ? { ...next, state: "SENT", chain_status: "CONFIRMED", hash, evidence: `${hash} is this attempt's transaction, mined successfully` }
-            : { ...next, state: "REVERTED", chain_status: "REVERTED", hash, evidence: `${hash} is this attempt's transaction, mined and reverted: it moved nothing` };
+            ? { ...next, state: "SENT", chain_status: "CONFIRMED", hash, evidence: `${hash} is this attempt's transaction${kept}, mined successfully` }
+            : { ...next, state: "REVERTED", chain_status: "REVERTED", hash, evidence: `${hash} is this attempt's transaction${kept}, mined and reverted: it moved nothing` };
         resolved = true;
         break;
       }
-      if (tx.nonce === a.nonce && tx.blockNumber !== null && !jobOpen && !ambiguous) {
-        next = { ...next, state: "NOT_SENT", evidence: `nonce ${a.nonce} of this wallet was taken by another mined transaction, ${hash}, and MetaMask holds no open request for this attempt` };
+      if (!same && tx.nonce === a.nonce && tx.blockNumber !== null && noOpenRequest) {
+        next = { ...next, state: "NOT_SENT", evidence: `this attempt was bound to nonce ${a.nonce}, which another mined transaction of this wallet took (${hash}), and MetaMask holds no request that could still sign it` };
         resolved = true;
         break;
       }
-      notes.push(`${hash} is another transaction of this wallet (nonce ${tx.nonce}), not this attempt`);
+      if (!same) notes.push(`${hash} is another transaction of this wallet (nonce ${tx.nonce})${tx.nonce === a.nonce && !noOpenRequest ? `; it took nonce ${a.nonce}, but ${state === undefined ? "MetaMask's state could not be read" : job === undefined ? "MetaMask's request for this attempt was not found" : "MetaMask's request for this attempt is still open"}, so that is not proof` : ""}`);
     }
     if (!resolved) {
       if (job !== undefined && jobStatus !== undefined && JOB_UNSIGNED.has(jobStatus) && job.txHash === undefined && a.hash === undefined) {
@@ -388,10 +396,12 @@ async function recover(env: RunEnv, flags: Readonly<Record<string, unknown>>): P
         try { confirmed = await client.getTransactionCount({ address: a.wallet as Hex, blockTag: "latest" }); } catch { confirmed = undefined; }
         const why = [
           ...notes,
-          ambiguous ? "MetaMask holds more than one new request on this chain: pass the right --tx-hash" : "",
+          state === undefined ? "MetaMask's wallet state could not be read" : "",
+          ambiguous ? `MetaMask holds more than one request tagged ${a.tag}` : "",
+          state !== undefined && job === undefined && a.wallet_mode !== "byok" ? `MetaMask's request for this attempt (tag ${a.tag}) was not found in mm wallet requests list` : "",
           jobOpen ? `MetaMask's request ${job!.pollingId} is still open (${jobStatus ?? "no status"}): it can still be signed and broadcast; approve or reject it in MetaMask (mm wallet requests list), then run recover again` : "",
           job !== undefined && jobStatus !== undefined && !jobOpen && !JOB_UNSIGNED.has(jobStatus) ? `MetaMask's request ${job.pollingId} ended ${jobStatus}${job.txHash === undefined ? " without a hash" : ""}` : "",
-          confirmed === undefined ? "the wallet's confirmed nonce could not be read" : confirmed > a.nonce ? `nonce ${a.nonce} of this wallet has been used (confirmed nonce ${confirmed}): find that transaction (mm tx history, or the explorer) and pass it with --tx-hash` : `nonce ${a.nonce} of this wallet is not used yet (confirmed nonce ${confirmed}); that alone does not prove this attempt will never be sent`,
+          confirmed === undefined ? "the wallet's confirmed nonce could not be read" : confirmed > a.nonce ? `nonce ${a.nonce} of this wallet has been used (confirmed nonce ${confirmed}): find that transaction (mm tx history, or the explorer) and pass it with --tx-hash` : `nonce ${a.nonce} of this wallet is not used yet (confirmed nonce ${confirmed}); that alone does not prove this attempt will never be sent${noOpenRequest ? `. MetaMask holds no request that could still sign it, and its nonce is bound: a transaction of your own that takes nonce ${a.nonce} cancels it for good; then pass that hash with --tx-hash` : ""}`,
         ].filter((x) => x !== "");
         next = { ...next, state: "UNKNOWN", evidence: why.join("; ") };
       }
@@ -411,7 +421,7 @@ async function recover(env: RunEnv, flags: Readonly<Record<string, unknown>>): P
     next: open.length === 0
       ? "No unresolved send from this wallet: Recta can send from it."
       : stillOpen.length > 0
-        ? `Still not known: ${stillOpen.map((a) => a.id).join(", ")} (see each evidence). Recta sends nothing from this wallet until they are resolved; do not move these funds by any other route either. If MetaMask holds no open request for an attempt and its nonce is still unused, you may release it by sending any transaction of your own from this wallet (it takes that nonce) and passing its hash with --tx-hash.`
+        ? `Still not known: ${stillOpen.map((a) => a.id).join(", ")} (see each evidence). Recta sends nothing from this wallet until they are resolved; do not move these funds by any other route either.`
         : `Resolved.${reports.length === 0 ? "" : ` A transfer left: never send it again. Report it: ${reports.join("; ")}`} Recta can send from this wallet again.`,
   };
 }
@@ -434,13 +444,14 @@ export async function runCommand(spec: CommandSpec, ctx: MmContextLike, io: unkn
   return JSON.parse(JSON.stringify(out, (_, x) => (typeof x === "bigint" ? x.toString() : x))) as Record<string, unknown>;
 }
 
-/** The pending-job ids MetaMask holds now (`mm wallet requests list`); unreadable → none. */
-function mmJobs(ctx: MmContextLike): readonly MmPendingJob[] {
+/** MetaMask's own requests (`mm wallet requests list`) and wallet mode; undefined when the state cannot be read. */
+function mmState(ctx: MmContextLike): { readonly jobs: readonly MmPendingJob[]; readonly mode?: string } | undefined {
   try {
-    const jobs = ctx.walletStateManager?.read().pendingJobs;
-    return Array.isArray(jobs) ? jobs : [];
+    const state = ctx.walletStateManager?.read();
+    if (state === undefined || !Array.isArray(state.pendingJobs)) return undefined;
+    return { jobs: state.pendingJobs, ...(typeof state.selectedWallet?.mode === "string" ? { mode: state.selectedWallet.mode } : {}) };
   } catch {
-    return [];
+    return undefined;
   }
 }
 
@@ -454,10 +465,10 @@ function economicOf(spec: Pick<CommandSpec, "id">, flags: Readonly<Record<string
   return out;
 }
 
-function journaled(a: MetaMaskSentTransaction, run: { readonly id: string; readonly started: string; readonly resultId?: string }, spec: Pick<CommandSpec, "id">, flags: Readonly<Record<string, unknown>>, jobsBefore: readonly string[], previous?: JournalAttempt): JournalAttempt {
+function journaled(a: MetaMaskSentTransaction, run: { readonly id: string; readonly started: string; readonly resultId?: string }, spec: Pick<CommandSpec, "id">, flags: Readonly<Record<string, unknown>>, walletMode: string | undefined, previous?: JournalAttempt): JournalAttempt {
   const now = new Date().toISOString();
   return {
-    id: `${run.id}-${a.attempt}`,
+    id: a.tag,
     command: spec.id,
     created_at: previous?.created_at ?? now,
     updated_at: now,
@@ -473,7 +484,8 @@ function journaled(a: MetaMaskSentTransaction, run: { readonly id: string; reado
     approval: a.approval,
     ...(run.resultId === undefined ? {} : { result_id: run.resultId }),
     economic: economicOf(spec, flags),
-    mm_jobs_before: previous?.mm_jobs_before ?? jobsBefore,
+    tag: a.tag,
+    ...((previous?.wallet_mode ?? walletMode) === undefined ? {} : { wallet_mode: (previous?.wallet_mode ?? walletMode)! }),
     state: a.state,
     ...(a.chainStatus === undefined ? {} : { chain_status: a.chainStatus }),
     ...(a.hash === undefined ? {} : { hash: a.hash }),
@@ -560,17 +572,17 @@ async function runSpec(spec: CommandSpec, ctx: MmContextLike, io: unknown, flags
   };
   const onSent = (t: MetaMaskSentTransaction) => {
     if (journal !== undefined) {
-      const id = `${run.id}-${t.attempt}`;
+      const id = t.tag;
       const previous = journal.read().find((a) => a.id === id);
-      const jobsBefore = previous === undefined ? mmJobs(ctx).flatMap((j) => (typeof j.pollingId === "string" ? [j.pollingId] : [])) : [];
+      const walletMode = previous === undefined ? mmState(ctx)?.mode : undefined;
       if (previous === undefined) {
         // Before the send: throws (and nothing is sent) when the attempt cannot be written.
-        journal.put(journaled(t, run, spec, flags, jobsBefore, previous));
+        journal.put(journaled(t, run, spec, flags, walletMode, previous));
         remember(t);
       } else {
         // An outcome: kept in this answer even if the journal cannot take it (the journal then still says UNKNOWN).
         remember(t);
-        journal.put(journaled(t, run, spec, flags, jobsBefore, previous));
+        journal.put(journaled(t, run, spec, flags, walletMode, previous));
       }
       return;
     }
@@ -587,6 +599,7 @@ async function runSpec(spec: CommandSpec, ctx: MmContextLike, io: unknown, flags
     ...(address === undefined ? {} : { address }),
     ...(execute === undefined ? {} : { execute }),
     onSent,
+    tagOf: (n) => `${run.id}-${n}`,
     publicClientFor: (id) => ctx.publicClient(id),
     limits: config,
     allowExecute: spec.wallet === "send",

@@ -178,16 +178,30 @@ would not accrue that route). Errors keep this server's JSON answer, with codes 
 | `RECTA_TRANSFER_REVERTED` | `REVERTED` | The transaction was mined and reverted: it moved nothing. An approval mined before it still stands. |
 | `RECTA_APPROVAL_SENT` | `APPROVAL_ONLY` | Only an approval left; no transfer was sent. |
 
-`transfer_sent` is `YES`, `NO` or `UNKNOWN`. Before MetaMask is asked to send anything, the attempt is written and
-fsynced to a journal on disk (`~/.recta/mm-journal/<wallet>.json`, mode 0600; `RECTA_MM_JOURNAL_DIR` moves it). If the
-journal cannot be written, nothing is sent. While an attempt of a wallet is unresolved (`UNKNOWN`, or a transfer not
-yet mined), even after the process was killed, `move --execute` and `approve-fee` refuse with `RECTA_SEND_UNKNOWN`.
+`transfer_sent` is `YES`, `NO` or `UNKNOWN`.
+
+Before MetaMask is asked to send anything, the attempt is written and fsynced to a journal on disk
+(`~/.recta/mm-journal/<wallet>.json`, mode 0600; `RECTA_MM_JOURNAL_DIR` moves it). If the journal cannot be written,
+nothing is sent. The journal is local to the machine that runs `mm`. Keep its directory on persistent storage (not a
+temporary container layer): it is what remembers a send whose outcome is not known.
+
+Every transaction is sent with the nonce read just before it, and with the attempt's tag in its intent
+(`Recta <attempt>: …`, kept in `mm wallet requests list`).
+
+While an attempt of a wallet is unresolved (`UNKNOWN`, or a transfer not yet mined), `move --execute` and
+`approve-fee` refuse with `RECTA_SEND_UNKNOWN`. This holds even after the process was killed.
+
 `mm recta recover` resolves attempts from MetaMask's own requests and the chain, never from the absence of a
-transaction. It answers `SENT` (`PENDING` or `CONFIRMED`) or `REVERTED` once it finds the committed transaction from
-this wallet. It answers `NOT_SENT` only when MetaMask's request ended `DENIED` or `EXPIRED` unsigned, or when the
-attempt's nonce was taken by another mined transaction of this wallet and MetaMask holds no open request for it. In
-every other case the attempt stays `UNKNOWN`. `--tx-hash` gives it a hash you found; the hash is checked on chain,
-never trusted.
+transaction:
+
+- `SENT` (`PENDING` or `CONFIRMED`), or `REVERTED`, when it finds this wallet's committed transaction. That is on the
+  bound nonce, or under the hash MetaMask gave for the tagged request.
+- `NOT_SENT` only when MetaMask's tagged request ended `DENIED` or `EXPIRED` unsigned. Or when another mined
+  transaction of this wallet took the bound nonce, MetaMask's state was read, and no request of MetaMask's can still
+  sign the attempt: its tagged request ended, or the wallet is BYOK, which signs at once.
+- `UNKNOWN` in every other case.
+
+`--tx-hash` gives it a hash you found; the hash is checked on chain, never trusted.
 
  In code, `@recta/mcp/metamask` exports `metaMaskSigner` for MetaMask's wallet executor.
 

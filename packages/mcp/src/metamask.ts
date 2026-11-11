@@ -18,8 +18,11 @@ export type MetaMaskWalletRequest =
   | {
       readonly kind: "transaction";
       readonly chainId: number;
-      // MetaMask's EVMTransaction keeps an explicit gas limit and EIP-1559 caps (fox-sdk EVMTransactionFees).
-      readonly transaction: { readonly to: Hex; readonly data: Hex; readonly value: bigint; readonly gas: bigint; readonly maxFeePerGas: bigint; readonly maxPriorityFeePerGas: bigint };
+      // MetaMask's EVMTransaction keeps an explicit gas limit, EIP-1559 caps and nonce (fox-sdk EVMTransactionFees:
+      // "used verbatim").
+      readonly transaction: { readonly to: Hex; readonly data: Hex; readonly value: bigint; readonly gas: bigint; readonly maxFeePerGas: bigint; readonly maxPriorityFeePerGas: bigint; readonly nonce: number };
+      /** agent-sdk WalletIntent: its summary goes on the wire and is kept in mm's pendingJobs[].intent. */
+      readonly intent?: { readonly summary: string; readonly action: string };
     }
   | { readonly kind: "message"; readonly chainId: number; readonly message: string }
   | { readonly kind: "typed-data"; readonly chainId: number; readonly typedData: RectaTypedData };
@@ -64,6 +67,8 @@ function refused(result: MetaMaskWalletResult, what: string): never {
 export interface MetaMaskSentTransaction {
   /** One per transaction this signer tried to send: later reports for the same attempt replace earlier ones. */
   readonly attempt: number;
+  /** The tag in the request's intent summary, which finds MetaMask's job for this attempt (`pendingJobs[].intent`). */
+  readonly tag: string;
   /**
    * UNKNOWN: reported BEFORE MetaMask is asked to send, and kept while nothing proves the outcome (the call threw, or
    * MetaMask answered without a hash, or stopped tracking it): it must be found on chain before anything is sent.
@@ -96,6 +101,8 @@ export function metaMaskSigner(args: {
    * hash). The first call must persist the attempt: if it throws, nothing is sent.
    */
   readonly onSent?: (sent: MetaMaskSentTransaction) => void;
+  /** The tag of the n-th send (default `recta-<n>`): put in the request's intent so its MetaMask job can be found. */
+  readonly tagOf?: (attempt: number) => string;
 }): RectaSigner {
   const { address, execute, publicClientFor } = args;
   let attempts = 0;
@@ -129,13 +136,21 @@ export function metaMaskSigner(args: {
       } catch (e) {
         throw new RectaCheckError("wallet_nonce", `could not read the nonce of ${address} on chain ${chainId} before sending (${safeErrorText(e).slice(0, 200)}): nothing was sent`);
       }
-      const attempt = { attempt: ++attempts, chainId, from: address, to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas, nonce, approval };
+      const n = ++attempts;
+      const tag = args.tagOf?.(n) ?? `recta-${n}`;
+      const attempt = { attempt: n, tag, chainId, from: address, to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas, nonce, approval };
       // Owner 2026-11-11 21:16/21:22: recorded (on disk, by the caller) before MetaMask is asked; from here on a send
       // may have happened, so it is UNKNOWN until evidence says otherwise.
       args.onSent?.({ ...attempt, state: "UNKNOWN" });
       let result: MetaMaskWalletResult;
       try {
-        result = await execute({ kind: "transaction", chainId, transaction: { to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas } }, { waitForReceipt: true });
+        // Fable V-1 on #19: the nonce is bound, so once another transaction takes it this one can never be mined.
+        result = await execute({
+          kind: "transaction",
+          chainId,
+          transaction: { to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas, nonce },
+          intent: { summary: `Recta ${tag}: ${approval ? "approval" : "route transfer"} on chain ${chainId}`, action: approval ? "bridge.approve" : "bridge" },
+        }, { waitForReceipt: true });
       } catch (e) {
         throw new RectaCheckError("wallet_send_unknown", `MetaMask's send failed without an answer (${safeErrorText(e).slice(0, 200)}): it may have been broadcast, now or later`);
       }
@@ -183,6 +198,7 @@ export function metaMaskSigner(args: {
         sent.maxFeePerGas !== maxFeePerGas && "maxFeePerGas",
         sent.maxPriorityFeePerGas !== maxPriorityFeePerGas && "maxPriorityFeePerGas",
         sent.chainId !== undefined && sent.chainId !== chainId && "chainId",
+        sent.nonce !== nonce && "nonce",
       ].filter((x): x is string => x !== false);
       if (changed.length > 0) throw new RectaCheckError("wallet_changed_transaction", `MetaMask sent ${hash} with a different ${changed.join(", ")} than Recta committed: it was mined as sent, so do not send it again; nothing more is sent from here`);
       return hash;
@@ -201,7 +217,7 @@ export interface MetaMaskWalletStateLike {
   readonly remoteWallets?: readonly { readonly name?: string | null; readonly address?: string; readonly namespace?: string }[];
   readonly selectedWallet?: { readonly mode?: string; readonly namespace?: string; readonly ref?: { readonly id?: string; readonly address?: string; readonly name?: string } };
   /** MetaMask's own record of its wallet requests (what `mm wallet requests list` shows). */
-  readonly pendingJobs?: readonly { readonly pollingId?: string; readonly kind?: string; readonly status?: string; readonly txHash?: string; readonly chainId?: number; readonly submittedAt?: string }[];
+  readonly pendingJobs?: readonly { readonly pollingId?: string; readonly kind?: string; readonly intent?: string; readonly status?: string; readonly txHash?: string; readonly chainId?: number; readonly submittedAt?: string }[];
 }
 
 /** The EVM address of the wallet selected in `mm` (`mm wallet use`), or a clear error naming `--address`. */
@@ -257,6 +273,7 @@ export function metaMaskRectaServer(args: {
   readonly allowExecute: boolean;
   readonly referrer?: string;
   readonly onSent?: (sent: MetaMaskSentTransaction) => void;
+  readonly tagOf?: (attempt: number) => string;
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
 }) {
@@ -266,7 +283,7 @@ export function metaMaskRectaServer(args: {
     throw new RectaCheckError("signs_nothing", "this command signs nothing");
   };
   const options: LocalServerOptions = {
-    signer: keyless ? keylessSigner(args.address) : metaMaskSigner({ address: args.address!, execute: args.execute ?? refuse, publicClientFor: args.publicClientFor, ...(args.onSent === undefined ? {} : { onSent: args.onSent }) }),
+    signer: keyless ? keylessSigner(args.address) : metaMaskSigner({ address: args.address!, execute: args.execute ?? refuse, publicClientFor: args.publicClientFor, ...(args.onSent === undefined ? {} : { onSent: args.onSent }), ...(args.tagOf === undefined ? {} : { tagOf: args.tagOf }) }),
     keyless,
     chain: metaMaskChainReader(args.publicClientFor),
     limits: { maxPermitUsdcAtomic: args.limits.maxPermitUsdcAtomic, maxNativeValueWei: args.limits.maxNativeValueWei, minOutputBps: args.limits.minOutputBps },

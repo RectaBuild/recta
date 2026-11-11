@@ -6,7 +6,7 @@
  * or SENT and not yet mined), no Recta command sends anything from that wallet; only `mm recta recover`, from
  * MetaMask's and the chain's evidence, resolves it. One file per wallet, mode 0600, in a 0700 directory.
  */
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { RectaCheckError } from "@recta/client";
@@ -33,8 +33,10 @@ export interface JournalAttempt {
   readonly result_id?: string;
   /** What the agent asked to move: a later run with the same identity is what must never happen twice. */
   readonly economic: Readonly<Record<string, string>>;
-  /** MetaMask's pending-job ids before the send: the job of this attempt is a new one. */
-  readonly mm_jobs_before: readonly string[];
+  /** In the request's intent summary: MetaMask's job for this attempt is the one whose `intent` carries it. */
+  readonly tag: string;
+  /** mm's wallet mode when the attempt was made (byok signs at once and keeps no request to sign later). */
+  readonly wallet_mode?: string;
   readonly state: AttemptState;
   readonly chain_status?: ChainStatus;
   readonly hash?: string;
@@ -78,6 +80,8 @@ export class SendJournal {
     try {
       const parsed = JSON.parse(text) as { attempts?: unknown };
       if (!Array.isArray(parsed.attempts)) throw new Error("no attempts list");
+      // Fable L-2: an entry that cannot be read as an attempt may be an UNKNOWN send: the whole journal is refused.
+      for (const a of parsed.attempts) if (!wellFormed(a)) throw new Error(`malformed entry ${JSON.stringify(a).slice(0, 120)}`);
       return parsed.attempts as JournalAttempt[];
     } catch (e) {
       // A journal that cannot be read may hide an UNKNOWN send: never treat it as empty.
@@ -123,23 +127,54 @@ export class SendJournal {
     } catch (e) {
       fail("create", e);
     }
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 3; i++) {
+      // The pid is written to a private file first and linked into place: the lock never exists without its pid
+      // (Fable L-1).
+      const mine = `${this.lockFile}.${process.pid}.${i}`;
       try {
-        const fd = openSync(this.lockFile, "wx", 0o600);
+        const fd = openSync(mine, "w", 0o600);
         try { writeSync(fd, String(process.pid)); fsyncSync(fd); } finally { closeSync(fd); }
+        linkSync(mine, this.lockFile);
         this.locked = true;
         return;
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") fail("lock", e);
-        let pid = NaN;
-        try { pid = Number(readFileSync(this.lockFile, "utf8")); } catch { /* removed meanwhile */ }
-        if (Number.isInteger(pid) && pid > 0 && alive(pid)) {
-          throw new RectaCheckError("wallet_busy", `another mm recta command (process ${pid}) is sending from this wallet: nothing was sent; wait for it to finish`);
-        }
-        try { unlinkSync(this.lockFile); } catch { /* removed meanwhile */ }
+      } finally {
+        try { unlinkSync(mine); } catch { /* not created */ }
       }
+      const held = this.holder();
+      if (held === "busy") throw new RectaCheckError("wallet_busy", "another mm recta command is sending from this wallet: nothing was sent; wait for it to finish");
+      // A dead holder's lock: move it aside under a private name, so two processes cannot both take it over. If what
+      // was moved is not the dead lock (another process took it over first), it is put back.
+      const aside = `${this.lockFile}.stale.${process.pid}.${i}`;
+      try { renameSync(this.lockFile, aside); } catch { continue; }
+      let moved: string | undefined;
+      try { moved = readFileSync(aside, "utf8"); } catch { /* unreadable */ }
+      if (moved !== held) {
+        try { linkSync(aside, this.lockFile); } catch { /* a newer lock is in place */ }
+        try { unlinkSync(aside); } catch { /* gone */ }
+        throw new RectaCheckError("wallet_busy", "another mm recta command took this wallet's lock: nothing was sent; wait for it to finish");
+      }
+      try { unlinkSync(aside); } catch { /* gone */ }
     }
     fail("lock", new Error("lock contended"));
+  }
+
+  /** The content of a lock whose holder is gone (it may be taken over), or "busy". */
+  private holder(): string | "busy" {
+    let content: string;
+    try {
+      content = readFileSync(this.lockFile, "utf8");
+    } catch {
+      return "";
+    }
+    const pid = Number(content);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      // Not a lock this module wrote whole: only an old one is taken over.
+      try { if (Date.now() - statSync(this.lockFile).mtimeMs < 60_000) return "busy"; } catch { return ""; }
+      return content;
+    }
+    return alive(pid) ? "busy" : content;
   }
 
   unlock(): void {
@@ -157,4 +192,11 @@ function alive(pid: number): boolean {
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+const STATES: ReadonlySet<string> = new Set(["UNKNOWN", "SENT", "NOT_SENT", "REVERTED"]);
+function wellFormed(a: unknown): boolean {
+  if (typeof a !== "object" || a === null) return false;
+  const r = a as Record<string, unknown>;
+  return typeof r["id"] === "string" && typeof r["state"] === "string" && STATES.has(r["state"]) && typeof r["wallet"] === "string" && typeof r["chain_id"] === "number" && typeof r["nonce"] === "number" && typeof r["to"] === "string" && typeof r["data_keccak"] === "string" && typeof r["tag"] === "string" && typeof r["approval"] === "boolean";
 }
