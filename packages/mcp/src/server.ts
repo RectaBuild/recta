@@ -54,7 +54,7 @@ const EVALUATE_INPUT = {
   type: "object",
   properties: {
     ...ROUTE,
-    amount: { type: "string", description: "Whole units, e.g. \"100\". Recta accepts from 3.5, with no upper limit." },
+    amount: { type: "string", description: "How much of source_asset to move, in whole tokens, e.g. \"100\" = 100 USDC. Stablecoins (USDC, USDT): at least 3.5 tokens (about 3.5 USD), no upper limit. BTC: at least 0.0005 BTC, no upper limit." },
     baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included) (thorchain or chainflip from Bitcoin). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
     recipient: { type: "string", description: "Destination address; defaults to the local wallet." },
     guarantee_class: { type: "string", enum: ["COMMITTED_ENFORCED", "ANY"], description: "Default ANY." },
