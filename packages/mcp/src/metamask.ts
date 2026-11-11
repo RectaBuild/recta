@@ -42,6 +42,13 @@ const APPROVE_SELECTOR = "0x095ea7b3";
 const SIGNATURE = /^0x[0-9a-fA-F]{130}$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
+/**
+ * The only answers that prove MetaMask never signed, so nothing can have been broadcast (Fable U-1 on #19): the request
+ * was denied, or expired before it was approved. Any other answer without a hash (FAILED, BROADCAST_FAILED, a tracking
+ * timeout, a throw) is UNKNOWN.
+ */
+const NOT_SIGNED_STATES: ReadonlySet<string> = new Set(["DENIED", "EXPIRED"]);
+
 function refused(result: MetaMaskWalletResult, what: string): never {
   const state = result.failureCode ?? result.status ?? "no result";
   const detail = result.failureDescription === undefined ? "" : `: ${result.failureDescription.slice(0, 200)}`;
@@ -55,8 +62,20 @@ function refused(result: MetaMaskWalletResult, what: string): never {
  * field, the next step (the transfer after an approval, or the report) is refused.
  */
 export interface MetaMaskSentTransaction {
-  readonly hash: Hex;
+  /** One per transaction this signer tried to send: later reports for the same attempt replace earlier ones. */
+  readonly attempt: number;
+  /**
+   * UNKNOWN: reported BEFORE MetaMask is asked to send, and kept while nothing proves the outcome (the call threw, or
+   * MetaMask answered without a hash, or stopped tracking it): it must be found on chain before anything is sent.
+   * SENT: MetaMask returned its hash. NOT_SENT: MetaMask answered DENIED or EXPIRED, so it never signed.
+   */
+  readonly state: "UNKNOWN" | "SENT" | "NOT_SENT";
+  readonly hash?: Hex;
   readonly chainId: number;
+  readonly from: Hex;
+  readonly to: Hex;
+  /** The wallet's pending nonce, read just before the send: the transaction, if it exists, uses it. */
+  readonly nonce: number;
   /** An ERC-20 `approve` (Recta's approval transaction, or the fee approval), not the transfer itself. */
   readonly approval: boolean;
 }
@@ -65,10 +84,11 @@ export function metaMaskSigner(args: {
   readonly address: Hex;
   readonly execute: MetaMaskWalletExecutor;
   readonly publicClientFor: MetaMaskPublicClientFor;
-  /** Called as soon as MetaMask returns a transaction hash, before it is read back: from then on money may have moved. */
+  /** Called before every send (UNKNOWN), then with its outcome (SENT with the hash, or NOT_SENT): from the first call on, money may have moved. */
   readonly onSent?: (sent: MetaMaskSentTransaction) => void;
 }): RectaSigner {
   const { address, execute, publicClientFor } = args;
+  let attempts = 0;
   if (!ADDRESS.test(address)) throw new RectaCheckError("input", "the MetaMask wallet address must be 0x + 40 hex characters");
   const same = (a: string) => a.toLowerCase() === address.toLowerCase();
   const signatureOf = (result: MetaMaskWalletResult, what: string): Hex => {
@@ -90,13 +110,35 @@ export function metaMaskSigner(args: {
     },
     sendTransaction: async (tx: RectaTransaction) => {
       const { chainId, to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas } = tx;
-      const result = await execute({ kind: "transaction", chainId, transaction: { to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas } }, { waitForReceipt: true });
+      const approval = data.slice(0, 10).toLowerCase() === APPROVE_SELECTOR;
+      // Fable U-1 on #19: the nonce identifies the transaction even if no hash ever comes back.
+      const client = publicClientFor(chainId);
+      let nonce: number;
+      try {
+        nonce = await client.getTransactionCount({ address, blockTag: "pending" });
+      } catch (e) {
+        throw new RectaCheckError("wallet_nonce", `could not read the nonce of ${address} on chain ${chainId} before sending (${safeErrorText(e).slice(0, 200)}): nothing was sent`);
+      }
+      const attempt = { attempt: ++attempts, chainId, from: address, to, nonce, approval };
+      // Owner 2026-11-11 21:16: from here on a send may have happened, so it is UNKNOWN until proven otherwise.
+      args.onSent?.({ ...attempt, state: "UNKNOWN" });
+      let result: MetaMaskWalletResult;
+      try {
+        result = await execute({ kind: "transaction", chainId, transaction: { to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas } }, { waitForReceipt: true });
+      } catch (e) {
+        throw new RectaCheckError("wallet_send_unknown", `MetaMask's send failed without an answer (${safeErrorText(e).slice(0, 200)}): it may have been broadcast with nonce ${nonce}`);
+      }
       const failed = result.kind !== "transaction" || result.failureCode !== undefined || (result.status !== undefined && FAILED_STATES.has(result.status));
       const withHash = result.kind === "transaction" && typeof result.hash === "string" && HEX32.test(result.hash);
-      if (failed && !withHash) refused(result, "send Recta's transaction");
-      if (!withHash) throw new RectaCheckError("wallet_transaction", "MetaMask returned no transaction hash");
+      if (!withHash) {
+        if (result.kind === "transaction" && result.status !== undefined && NOT_SIGNED_STATES.has(result.status)) {
+          args.onSent?.({ ...attempt, state: "NOT_SENT" });
+          refused(result, "send Recta's transaction");
+        }
+        throw new RectaCheckError("wallet_send_unknown", `MetaMask answered ${result.failureCode ?? result.status ?? "without a status"} and no transaction hash: it may have been broadcast with nonce ${nonce}`);
+      }
       const hash = (result as { hash: string }).hash as Hex;
-      args.onSent?.({ hash, chainId, approval: data.slice(0, 10).toLowerCase() === APPROVE_SELECTOR });
+      args.onSent?.({ ...attempt, state: "SENT", hash });
       // Fable R-1 on #19: a failure that carries a hash (MetaMask stopped tracking it, or reports a failure after
       // broadcasting) may still be mined. Never say it was not sent.
       if (failed) {
@@ -105,7 +147,6 @@ export function metaMaskSigner(args: {
       }
       // Read back what was mined: Recta verifies the committed transaction field by field, so a changed one is worth
       // nothing and must stop the route here.
-      const client = publicClientFor(chainId);
       let sent: Awaited<ReturnType<PublicClient["getTransaction"]>>;
       try {
         await client.waitForTransactionReceipt({ hash });

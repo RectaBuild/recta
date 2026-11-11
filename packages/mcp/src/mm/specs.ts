@@ -222,8 +222,81 @@ export interface MmContextLike {
 
 const present = (v: unknown): v is string | boolean => (typeof v === "string" && v.length > 0) || typeof v === "boolean";
 
+/**
+ * Whether this run of the command can send a transaction: `mm recta move --execute` and `mm recta approve-fee`. Every
+ * answer of such a run carries `execution_state` (Fable U-1 on #19).
+ */
+function sends(spec: Pick<CommandSpec, "id">, flags: Readonly<Record<string, unknown>>): boolean {
+  return spec.id === "recta:approve-fee" || (spec.id === "recta:move" && flags["execute"] === true);
+}
+
+/**
+ * The answer to any error of a run that can send (owner 2026-11-11 21:16, Fable M-1/R-1/R-2/U-1 on #19): it never
+ * implies that sending again is safe. It carries `execution_state`, the evaluation's result_id, every known hash, and
+ * one unambiguous instruction.
+ *  - NOT_SENT: nothing was attempted, or MetaMask answered DENIED/EXPIRED: it never signed.
+ *  - UNKNOWN: a send was attempted and its outcome is not known (no hash, or MetaMask stopped tracking it): the
+ *    wallet's nonce must be checked on chain before anything is sent.
+ *  - REVERTED: the transfer was mined and reverted; nothing moved.
+ *  - SENT: the transfer left: report it, never send it again.
+ *  - APPROVAL_ONLY: only an approval left; no transfer was sent.
+ */
+export function afterSend(spec: Pick<CommandSpec, "id">, body: Record<string, unknown>, sent: readonly MetaMaskSentTransaction[]): Record<string, unknown> {
+  const tried = sent.filter((t) => t.state !== "NOT_SENT");
+  const hashes = tried.flatMap((t) => (t.hash === undefined ? [] : [t.hash]));
+  const approvals = tried.filter((t) => t.approval && t.state === "SENT").map((t) => t.hash!);
+  const transfer = tried.find((t) => !t.approval && t.state === "SENT")?.hash;
+  const resultId = typeof body["result_id"] === "string" ? body["result_id"] : undefined;
+  const last = tried[tried.length - 1];
+  if (last === undefined) {
+    return { ...body, execution_state: "NOT_SENT", transfer_sent: false, next: "Nothing was sent from this wallet: MetaMask did not sign, or the command stopped before asking it to." };
+  }
+  const base = { ...body, sent_tx_hashes: hashes, ...(approvals.length === 0 ? {} : { approval_tx_hashes: approvals }) };
+  const reportCmd = (origin: string) => resultId === undefined ? "" : `mm recta report --result-id ${resultId} --origin-tx-hash ${origin}${approvals.length > 0 && spec.id === "recta:move" ? ` --approval-tx-hash ${approvals[0]}` : ""}`;
+  if (body["check"] === "transaction_failed" && !last.approval && last.hash !== undefined) {
+    const standing = approvals.length === 0 ? "" : ` The approval ${approvals.join(", ")} to the route's contract was mined and still stands: reuse it, or revoke it with an approve of 0 if you will not use this route.`;
+    return { ...base, execution_state: "REVERTED", transfer_sent: false, reverted_tx_hash: last.hash, next: `The transfer ${last.hash} was mined and reverted on chain: nothing moved. You may move the funds by Recta again or by your own route.${standing}` };
+  }
+  if (last.state === "UNKNOWN" || body["check"] === "wallet_unconfirmed") {
+    const what = last.approval ? "an approval" : "the transfer";
+    const known = last.hash === undefined ? "its hash is not known" : `its hash is ${last.hash}`;
+    const ifUsed = last.approval
+      ? " If that nonce was used by this approval, no transfer was sent: do not send the approval again."
+      : resultId === undefined ? "" : ` If that nonce was used by this transfer, it left: report it with ${reportCmd(last.hash ?? "<its hash>")}, and never send it again.`;
+    return {
+      ...base,
+      execution_state: "UNKNOWN",
+      ...(last.approval ? { transfer_sent: false } : { transfer_sent: "UNKNOWN" }),
+      chain_id: last.chainId,
+      address: last.from,
+      to: last.to,
+      nonce: last.nonce,
+      ...(last.hash === undefined ? {} : { unconfirmed_tx_hash: last.hash }),
+      next: `MetaMask may have broadcast ${what} from ${last.from} on chain ${last.chainId} with nonce ${last.nonce} to ${last.to} (${known}). Send nothing more for this transfer, by Recta or by any other route, until you have checked on chain whether nonce ${last.nonce} of ${last.from} was used, and by which transaction (mm tx history, mm wallet requests list, or the chain's explorer).${ifUsed} If the nonce is still unused, nothing from this attempt was broadcast.`,
+    };
+  }
+  if (transfer !== undefined) {
+    const report = reportCmd(transfer);
+    return { ...base, execution_state: "SENT", transfer_sent: true, origin_tx_hash: transfer, next: `The transfer was sent (${transfer}): never send it again, by Recta or by your own route.${report === "" ? "" : ` Report it once it is mined: ${report}`}` };
+  }
+  return { ...base, execution_state: "APPROVAL_ONLY", transfer_sent: false, next: `Only an approval was sent (${approvals.join(", ")}); no transfer left this wallet. Do not send the approval again.` };
+}
+
 /** Runs one command: its flags in, the tool's JSON answer out (bigints as strings). Throws RectaToolError or RectaCheckError. */
 export async function runCommand(spec: CommandSpec, ctx: MmContextLike, io: unknown, flags: Readonly<Record<string, unknown>>, fetchImpl?: typeof fetch): Promise<Record<string, unknown>> {
+  const sent: MetaMaskSentTransaction[] = [];
+  let out: Record<string, unknown>;
+  try {
+    out = await runSpec(spec, ctx, io, flags, sent, fetchImpl);
+  } catch (e) {
+    if (!sends(spec, flags)) throw e;
+    throw new RectaToolError(afterSend(spec, bodyOf(e), sent));
+  }
+  if (sends(spec, flags)) out = { ...out, execution_state: sent.some((t) => t.state === "SENT") ? "SENT" : "NOT_SENT" };
+  return JSON.parse(JSON.stringify(out, (_, x) => (typeof x === "bigint" ? x.toString() : x))) as Record<string, unknown>;
+}
+
+async function runSpec(spec: CommandSpec, ctx: MmContextLike, io: unknown, flags: Readonly<Record<string, unknown>>, sent: MetaMaskSentTransaction[], fetchImpl?: typeof fetch): Promise<Record<string, unknown>> {
   const s = (k: string): string | undefined => (typeof flags[k] === "string" && flags[k] !== "" ? (flags[k] as string) : undefined);
   // The same parsing and defaults as `npx @recta/mcp` (RECTA_MAX_FEE_USDC …), from flags only: never a key.
   const env: Record<string, string | undefined> = {
@@ -255,18 +328,17 @@ export async function runCommand(spec: CommandSpec, ctx: MmContextLike, io: unkn
   if (signs && selected !== undefined && address !== undefined && selected.toLowerCase() !== address.toLowerCase()) {
     throw new RectaCheckError("wallet_address", `--address ${address} is not the wallet selected in mm (${selected}): select it with mm, or drop --address`);
   }
-  const sent: MetaMaskSentTransaction[] = [];
   const execute = signs ? await ctx.walletExecutor(io, spec.id) : undefined;
-  // approve-fee is the one command that sends without signing first: when mm's selection cannot be read, prove the
-  // address with one signature before anything is sent.
-  if (spec.id === "recta:approve-fee" && selected === undefined && address !== undefined && execute !== undefined) {
+  // approve-fee is the one command that would send without signing first: one signature proves that the wallet
+  // MetaMask signs with is this address before any approval is sent (owner 2026-11-11 21:16, Fable B-1).
+  if (spec.id === "recta:approve-fee" && address !== undefined && execute !== undefined) {
     await metaMaskSigner({ address, execute, publicClientFor: (id) => ctx.publicClient(id) }).signMessage(`Recta: ${address} approves USDC to Permit2 for Recta's fees on Base.`);
   }
   const call = metaMaskRectaServer({
     keyless: spec.wallet === "none" || (spec.wallet === "read" && spec.id === "recta:trial"),
     ...(address === undefined ? {} : { address }),
     ...(execute === undefined ? {} : { execute }),
-    onSent: (t) => { sent.push(t); },
+    onSent: (t) => { const i = sent.findIndex((x) => x.attempt === t.attempt); if (i < 0) sent.push(t); else sent[i] = t; },
     publicClientFor: (id) => ctx.publicClient(id),
     limits: config,
     allowExecute: spec.wallet === "send",
@@ -275,43 +347,7 @@ export async function runCommand(spec: CommandSpec, ctx: MmContextLike, io: unkn
   });
   const args: Record<string, unknown> = {};
   for (const input of spec.inputs) if (input.arg !== undefined && present(flags[input.flag])) args[input.arg] = flags[input.flag];
-  let out: Record<string, unknown>;
-  try {
-    out = await spec.run(call, args, flags);
-  } catch (e) {
-    if (sent.length === 0) throw e;
-    // Fable M-1 on #19: money may already have moved. Every answer from here says so and keeps the hashes.
-    const body = bodyOf(e);
-    const approvals = sent.filter((t) => t.approval).map((t) => t.hash);
-    const transfer = sent.find((t) => !t.approval)?.hash;
-    const last = sent[sent.length - 1]!;
-    // Fable R-2 on #19: the last transaction was mined and reverted (the client's transaction_failed): nothing moved.
-    if (body["check"] === "transaction_failed" && !last.approval) {
-      throw new RectaToolError({
-        ...body,
-        sent_tx_hashes: sent.map((t) => t.hash),
-        reverted_tx_hash: last.hash,
-        transfer_sent: false,
-        next: `The transfer ${last.hash} reverted on chain: nothing moved. You may move the funds by Recta again or by your own route.`,
-      });
-    }
-    const uncertain = body["check"] === "wallet_unconfirmed";
-    const resultId = typeof body["result_id"] === "string" ? body["result_id"] : undefined;
-    const report = transfer !== undefined && resultId !== undefined
-      ? ` Report it once it is mined: mm recta report --result-id ${resultId} --origin-tx-hash ${transfer}${approvals.length > 0 && spec.id === "recta:move" ? ` --approval-tx-hash ${approvals[0]}` : ""}`
-      : "";
-    throw new RectaToolError({
-      ...body,
-      sent_tx_hashes: sent.map((t) => t.hash),
-      ...(transfer === undefined ? {} : { origin_tx_hash: transfer, transfer_sent: true }),
-      ...(approvals.length === 0 ? {} : { approval_tx_hashes: approvals }),
-      ...(uncertain ? { unconfirmed_tx_hash: last.hash } : {}),
-      next: transfer !== undefined
-        ? `The transfer ${uncertain && !last.approval ? "may have been sent" : "was sent"} (${transfer}): look it up on chain, and do not send it again, by Recta or by your own route, while it may still be mined.${report}`
-        : `An approval was ${uncertain ? "possibly " : ""}sent (${approvals.join(", ")}) but no transfer: do not send the approval again.`,
-    });
-  }
-  return JSON.parse(JSON.stringify(out, (_, x) => (typeof x === "bigint" ? x.toString() : x))) as Record<string, unknown>;
+  return spec.run(call, args, flags);
 }
 
 /** The parts of `@metamask/agent-wallet/plugin` the commands use. */
@@ -328,8 +364,9 @@ const HINT = "Recta's guide for agents: https://api.recta.build/llms.txt";
 /** The error `mm` shows: the MCP server's own JSON answer, with a code an agent can branch on. */
 export function commandErrorOf(sdk: MmPluginSdk, e: unknown): Error {
   if (e instanceof RectaToolError) {
-    if (e.body["transfer_sent"] === true || Array.isArray(e.body["sent_tx_hashes"])) {
-      const code = typeof e.body["reverted_tx_hash"] === "string" ? "RECTA_TRANSFER_REVERTED" : e.body["transfer_sent"] === true ? "RECTA_TRANSFER_SENT" : "RECTA_APPROVAL_SENT";
+    const state = e.body["execution_state"];
+    if (typeof state === "string") {
+      const code = { NOT_SENT: "RECTA_NOT_SENT", REVERTED: "RECTA_TRANSFER_REVERTED", UNKNOWN: "RECTA_SEND_UNKNOWN", SENT: "RECTA_TRANSFER_SENT", APPROVAL_ONLY: "RECTA_APPROVAL_SENT" }[state] ?? "RECTA_SEND_UNKNOWN";
       return new sdk.CommandError(code, e.message, String(e.body["next"]));
     }
     const kind = typeof e.body["error"] === "string" ? (e.body["error"] as string) : "FAILED";

@@ -167,9 +167,18 @@ the same defaults as this server: `--max-fee-usdc` (1), `--max-native-wei` (0), 
 Every signature must recover to that address before Recta sees it. Every transaction is sent with Recta's exact gas
 limit and fee caps, and read back once mined: if MetaMask changed any committed field, nothing more is sent (Recta
 would not accrue that route). Errors keep this server's JSON answer, with codes such as `RECTA_CHECK_FAILED`,
-`RECTA_HTTP` and `RECTA_DEBT`. Once a transaction has been sent, every error says so: `RECTA_TRANSFER_SENT` (the
-transfer left: never send it again; the answer keeps `result_id`, `origin_tx_hash` and the approval hash, and its hint
-is the exact `mm recta report …` command) or `RECTA_APPROVAL_SENT` (only the approval left). In code, `@recta/mcp/metamask` exports `metaMaskSigner` for MetaMask's wallet executor.
+`RECTA_HTTP` and `RECTA_DEBT`. Every answer of a command that can send (`move --execute`, `approve-fee`) carries
+`execution_state`, and its errors carry a matching code:
+
+| Code | `execution_state` | Meaning |
+| --- | --- | --- |
+| `RECTA_NOT_SENT` | `NOT_SENT` | Nothing was sent: MetaMask answered `DENIED` or `EXPIRED`, or the command stopped before asking it. |
+| `RECTA_SEND_UNKNOWN` | `UNKNOWN` | A send was attempted and its outcome is not known (the call died, no hash, or MetaMask stopped tracking it). The answer keeps `result_id`, `chain_id`, `address`, `to` and the `nonce` read before the send: send nothing more until that nonce has been checked on chain. |
+| `RECTA_TRANSFER_SENT` | `SENT` | The transfer left: never send it again. The answer keeps `result_id`, `origin_tx_hash` and the approval hash, and its hint is the exact `mm recta report …` command. |
+| `RECTA_TRANSFER_REVERTED` | `REVERTED` | The transfer was mined and reverted: nothing moved. An approval mined before it still stands. |
+| `RECTA_APPROVAL_SENT` | `APPROVAL_ONLY` | Only an approval left; no transfer was sent. |
+
+ In code, `@recta/mcp/metamask` exports `metaMaskSigner` for MetaMask's wallet executor.
 
 This plugin was built against the published declarations of `@metamask/agent-wallet` 7.3.0; it imports MetaMask's
 plugin base class from the running `mm`, and neither bundles nor depends on MetaMask's packages.

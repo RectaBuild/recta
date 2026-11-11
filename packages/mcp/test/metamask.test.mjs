@@ -36,6 +36,7 @@ function executor(signer = account, { sendAs = (t) => t, result = {} } = {}) {
 function publicClients(sent = new Map(), reads = []) {
   return (chainId) => ({
     getChainId: async () => chainId,
+    getTransactionCount: async () => 7,
     estimateFeesPerGas: async () => ({ maxFeePerGas: 7_000_000n, maxPriorityFeePerGas: 1_000_000n }),
     waitForTransactionReceipt: async ({ hash }) => { reads.push(["receipt", chainId, hash]); return { status: "success" }; },
     getTransaction: async ({ hash }) => { reads.push(["tx", chainId, hash]); return sent.get(hash); },
@@ -272,15 +273,19 @@ function collectingRecta({ reportStatus = 200 } = {}) {
 }
 
 /** MetaMask with distinct hashes per transaction; `rewrite(tx, i)` changes what is mined; `readback(i)` may throw. */
-function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_000_000n, allowance = 1_000_000n, status = () => "CONFIRMED", receipt = () => "success" } = {}) {
+function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_000_000n, allowance = 1_000_000n, status = () => "CONFIRMED", receipt = () => "success", answer = () => undefined, sign = () => undefined, nonce = () => undefined } = {}) {
   const requests = [];
   const mined = new Map();
   let n = 0;
   const run = async (request, opts) => {
     requests.push({ request, opts });
+    if (request.kind !== "transaction") { const r = sign(request); if (r !== undefined) return r; }
     if (request.kind === "message") return { kind: "signature", status: "SIGNED", signature: await account.signMessage({ message: request.message }) };
     if (request.kind === "typed-data") return { kind: "signature", status: "SIGNED", signature: await account.signTypedData(request.typedData) };
     const i = n++;
+    // `answer(i)` may throw (the call dies) or return MetaMask's answer without a hash.
+    const instead = answer(i);
+    if (instead !== undefined) return instead;
     const hash = `0x${String(i + 1).padStart(2, "0").repeat(32)}`;
     const t = rewrite(request.transaction, i);
     mined.set(hash, { i, tx: { from: account.address, to: t.to, input: t.data, value: t.value, gas: t.gas, maxFeePerGas: t.maxFeePerGas, maxPriorityFeePerGas: t.maxPriorityFeePerGas, chainId: request.chainId } });
@@ -288,6 +293,8 @@ function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_0
   };
   const publicClient = (chainId) => ({
     getChainId: async () => chainId,
+    // The pending nonce: 7 plus every send asked of MetaMask so far.
+    getTransactionCount: async () => { nonce(n); return 7 + n; },
     estimateFeesPerGas: async () => ({ maxFeePerGas: 7_000_000n, maxPriorityFeePerGas: 1_000_000n }),
     waitForTransactionReceipt: async ({ hash }) => ({ status: receipt(mined.get(hash).i) }),
     getTransaction: async ({ hash }) => { const m = mined.get(hash); readback(m.i); return m.tx; },
@@ -335,7 +342,8 @@ test("M-1 (a): MetaMask changes the transfer's gas: the error says it was sent, 
   assert.equal(body.result_id, "r_test");
   assert.equal(body.origin_tx_hash, `0x${"02".repeat(32)}`);
   assert.deepEqual(body.approval_tx_hashes, [`0x${"01".repeat(32)}`]);
-  assert.match(shown.hint, /do not send it again/);
+  assert.equal(body.execution_state, "SENT");
+  assert.match(shown.hint, /never send it again/);
   assert.match(shown.hint, new RegExp(`mm recta report --result-id r_test --origin-tx-hash 0x${"02".repeat(32)} --approval-tx-hash 0x${"01".repeat(32)}`));
   assert.doesNotMatch(body.message, /wallet_changed_transaction:/, "no duplicated prefix (B-2)");
 });
@@ -363,7 +371,8 @@ test("M-1: MetaMask changes the approval: only the approval was sent, the transf
   const { shown, w } = await transferSent({ rewrite: (t, i) => (i === 0 ? { ...t, maxFeePerGas: 1n } : t) });
   assert.equal(shown.code, "RECTA_APPROVAL_SENT");
   assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 1);
-  assert.equal(JSON.parse(shown.message).transfer_sent, undefined);
+  assert.equal(JSON.parse(shown.message).transfer_sent, false);
+  assert.equal(JSON.parse(shown.message).execution_state, "APPROVAL_ONLY");
   assert.match(shown.hint, /no transfer/);
 });
 
@@ -371,7 +380,11 @@ test("approve-fee: one bounded approve to Permit2 on Base; a foreign --address i
   const w = wallet({ allowance: 0n });
   const out = await runCommand(spec("recta:approve-fee"), w.c, {}, { "amount-usdc": "0.5" }, collectingRecta().f);
   assert.equal(out.approved_usdc_atomic, "500000");
-  const [{ request }] = w.requests;
+  assert.equal(out.execution_state, "SENT");
+  // B-1 (owner 21:16): the identity is proven by a signature before the approval is asked for.
+  assert.deepEqual(w.requests.map((r) => r.request.kind), ["message", "transaction"]);
+  assert.match(w.requests[0].request.message, new RegExp(`^Recta: ${account.address} approves USDC to Permit2`));
+  const { request } = w.requests[1];
   assert.equal(request.chainId, 8453);
   assert.equal(request.transaction.to.toLowerCase(), pins.USDC_BASE.toLowerCase());
   assert.equal(request.transaction.data, encodeFunctionData({ abi: parseAbi(["function approve(address,uint256)"]), args: [pins.PERMIT2, 500_000n] }));
@@ -410,21 +423,151 @@ test("M-2 and B-2: agent texts name only declarable baselines and mm commands", 
   assert.match(out.preview.note, /mm recta move --execute/);
 });
 
-test("R-1: MetaMask stops tracking the transfer but gives its hash: it may have been sent, never 'did not send'", async () => {
+test("R-1: MetaMask stops tracking the transfer but gives its hash: UNKNOWN, never 'did not send'", async () => {
   for (const state of ["CONFIRMATION_TRACKING_EXPIRED", "BROADCAST_TRACKING_EXPIRED"]) {
     const { shown } = await transferSent({ status: (i) => (i === 1 ? state : "CONFIRMED") });
-    assert.equal(shown.code, "RECTA_TRANSFER_SENT", state);
+    assert.equal(shown.code, "RECTA_SEND_UNKNOWN", state);
     const body = JSON.parse(shown.message);
     assert.equal(body.check, "wallet_unconfirmed");
-    assert.equal(body.origin_tx_hash, `0x${"02".repeat(32)}`);
+    assert.equal(body.execution_state, "UNKNOWN");
+    assert.equal(body.transfer_sent, "UNKNOWN");
     assert.equal(body.unconfirmed_tx_hash, `0x${"02".repeat(32)}`);
-    assert.match(shown.hint, /may have been sent/);
-    assert.match(shown.hint, /mm recta report --result-id r_test/);
+    assert.equal(body.nonce, 8);
+    assert.match(shown.hint, /Send nothing more for this transfer/);
+    assert.match(shown.hint, new RegExp(`mm recta report --result-id r_test --origin-tx-hash 0x${"02".repeat(32)}`));
     assert.doesNotMatch(shown.message, /did not send/);
   }
-  // Without a hash, MetaMask did not send it.
-  const signer = metaMaskSigner({ address: account.address, execute: async () => ({ kind: "transaction", status: "BROADCAST_FAILED" }), publicClientFor: publicClients() });
-  await assert.rejects(signer.sendTransaction(tx), /MetaMask did not send/);
+});
+
+/** U-1: every way a send can end without a hash. */
+const unknownTransfer = (shown) => {
+  assert.equal(shown.code, "RECTA_SEND_UNKNOWN");
+  const body = JSON.parse(shown.message);
+  assert.equal(body.execution_state, "UNKNOWN");
+  assert.equal(body.transfer_sent, "UNKNOWN");
+  assert.equal(body.result_id, "r_test");
+  assert.equal(body.chain_id, 8453);
+  assert.equal(body.address, account.address);
+  assert.equal(body.to, artifact().transactions[1].to);
+  assert.equal(body.nonce, 8, "the nonce read before the transfer (the approval used 7)");
+  assert.equal(body.unconfirmed_tx_hash, undefined);
+  assert.deepEqual(body.approval_tx_hashes, [`0x${"01".repeat(32)}`]);
+  assert.match(shown.hint, /Send nothing more for this transfer, by Recta or by any other route, until you have checked on chain whether nonce 8 of 0x/);
+  assert.match(shown.hint, /mm recta report --result-id r_test --origin-tx-hash <its hash>/);
+  assert.doesNotMatch(shown.message + shown.hint, /did not send|no transfer/);
+  return body;
+};
+
+test("U-1 (Y1): the call that sends the transfer dies without an answer: UNKNOWN with result_id, nonce, to", async () => {
+  const { shown } = await transferSent({ answer: (i) => { if (i === 1) throw new Error("socket hang up"); } });
+  assert.equal(unknownTransfer(shown).check, "wallet_send_unknown");
+});
+
+test("U-1 (Y4): MetaMask answers a failure or a tracking timeout without a hash: UNKNOWN, never 'did not send'", async () => {
+  for (const status of ["CONFIRMATION_TRACKING_EXPIRED", "BROADCAST_TRACKING_EXPIRED", "BROADCAST_FAILED", "FAILED", undefined]) {
+    const { shown } = await transferSent({ answer: (i) => (i === 1 ? { kind: "transaction", ...(status === undefined ? {} : { status }) } : undefined) });
+    unknownTransfer(shown);
+  }
+  const { shown } = await transferSent({ answer: (i) => (i === 1 ? { kind: "transaction", status: "FAILED", failureCode: "SIGN_FAILED" } : undefined) });
+  unknownTransfer(shown);
+});
+
+test("U-1: only DENIED or EXPIRED without a hash prove the transfer was not signed", async () => {
+  for (const status of ["DENIED", "EXPIRED"]) {
+    const { shown, w } = await transferSent({ answer: (i) => (i === 1 ? { kind: "transaction", status } : undefined) });
+    assert.equal(shown.code, "RECTA_APPROVAL_SENT", status);
+    const body = JSON.parse(shown.message);
+    assert.equal(body.execution_state, "APPROVAL_ONLY");
+    assert.equal(body.transfer_sent, false);
+    assert.match(body.message, /MetaMask did not send/);
+    assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 2, "nothing is retried");
+  }
+});
+
+test("U-1 (Y2): the call that sends the route's approval dies: UNKNOWN for the approval, and the transfer is never asked for", async () => {
+  const { shown, w } = await transferSent({ answer: (i) => { if (i === 0) throw new Error("socket hang up"); } });
+  assert.equal(shown.code, "RECTA_SEND_UNKNOWN");
+  const body = JSON.parse(shown.message);
+  assert.equal(body.execution_state, "UNKNOWN");
+  assert.equal(body.transfer_sent, false);
+  assert.equal(body.nonce, 7);
+  assert.equal(body.to.toLowerCase(), pins.USDC_BASE.toLowerCase());
+  assert.match(shown.hint, /may have broadcast an approval/);
+  assert.match(shown.hint, /Send nothing more for this transfer/);
+  assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 1);
+});
+
+test("U-1: the nonce cannot be read before a send: nothing is asked of MetaMask, NOT_SENT", async () => {
+  const { shown, w } = await transferSent({ nonce: (n) => { if (n === 1) throw new Error("429"); } });
+  assert.equal(shown.code, "RECTA_APPROVAL_SENT", "the approval left, the transfer was never asked for");
+  assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 1);
+  const w0 = wallet({ allowance: 0n, nonce: () => { throw new Error("429"); } });
+  const e = await runCommand(spec("recta:approve-fee"), w0.c, {}, { "amount-usdc": "0.5" }, collectingRecta().f).catch((x) => x);
+  const shown0 = commandErrorOf(sdkErr, e);
+  assert.equal(shown0.code, "RECTA_NOT_SENT");
+  assert.equal(JSON.parse(shown0.message).check, "wallet_nonce");
+  assert.equal(w0.requests.filter((r) => r.request.kind === "transaction").length, 0);
+});
+
+/** approve-fee's answer as mm shows it. */
+const approveFee = async (opts) => {
+  const w = wallet({ allowance: 0n, ...opts });
+  const e = await runCommand(spec("recta:approve-fee"), w.c, {}, { "amount-usdc": "0.5" }, collectingRecta().f).catch((x) => x);
+  return { shown: commandErrorOf(sdkErr, e), w };
+};
+
+test("U-2 (Y3): approve-fee: the send dies, fails without a hash, or fails with one: UNKNOWN with nonce and to", async () => {
+  for (const opts of [
+    { answer: () => { throw new Error("socket hang up"); } },
+    { answer: () => ({ kind: "transaction", status: "BROADCAST_FAILED" }) },
+    { status: () => "CONFIRMATION_TRACKING_EXPIRED" },
+  ]) {
+    const { shown } = await approveFee(opts);
+    assert.equal(shown.code, "RECTA_SEND_UNKNOWN");
+    const body = JSON.parse(shown.message);
+    assert.equal(body.execution_state, "UNKNOWN");
+    assert.equal(body.nonce, 7);
+    assert.equal(body.to.toLowerCase(), pins.USDC_BASE.toLowerCase());
+    assert.match(shown.hint, /may have broadcast an approval/);
+    assert.match(shown.hint, /do not send the approval again/);
+  }
+});
+
+test("U-2: approve-fee: MetaMask denies (NOT_SENT), or the approval cannot be read back (sent: not again)", async () => {
+  const denied = await approveFee({ answer: () => ({ kind: "transaction", status: "DENIED" }) });
+  assert.equal(denied.shown.code, "RECTA_NOT_SENT");
+  assert.equal(JSON.parse(denied.shown.message).execution_state, "NOT_SENT");
+  const unread = await approveFee({ readback: () => { throw new Error("TransactionNotFoundError"); } });
+  assert.equal(unread.shown.code, "RECTA_APPROVAL_SENT");
+  assert.deepEqual(JSON.parse(unread.shown.message).approval_tx_hashes, [`0x${"01".repeat(32)}`]);
+  assert.match(unread.shown.hint, /Do not send the approval again/);
+  // A refused identity proof sends nothing.
+  const refusedProof = await approveFee({ sign: () => ({ kind: "signature", status: "DENIED" }) });
+  assert.equal(refusedProof.shown.code, "RECTA_NOT_SENT");
+  assert.equal(refusedProof.w.requests.filter((r) => r.request.kind === "transaction").length, 0);
+});
+
+test("U-2: pay-debt refuses an offer for another payer and stops at a denied signature, sending nothing to Recta", async () => {
+  const { f, seen } = collectingRecta();
+  const offer = { ...feeOffer("DEBT"), permit: { payer: other.address } };
+  const w = wallet();
+  await assert.rejects(runCommand(spec("recta:pay-debt"), w.c, {}, { "debt-offer": JSON.stringify(offer) }, f), /another payer/);
+  assert.equal(w.requests.length, 0);
+  const d = wallet({ sign: (r) => (r.kind === "typed-data" ? { kind: "signature", status: "DENIED" } : undefined) });
+  await assert.rejects(runCommand(spec("recta:pay-debt"), d.c, {}, { "debt-offer": JSON.stringify(feeOffer("DEBT")) }, f), /MetaMask did not sign/);
+  assert.equal(seen.filter((r) => r.path.endsWith("/fee-debts")).length, 0);
+  const t = wallet({ sign: (r) => { if (r.kind === "typed-data") throw new Error("socket hang up"); } });
+  await assert.rejects(runCommand(spec("recta:pay-debt"), t.c, {}, { "debt-offer": JSON.stringify(feeOffer("DEBT")) }, f));
+  assert.equal(seen.filter((r) => r.path.endsWith("/fee-debts")).length, 0);
+});
+
+test("U-1: a successful move --execute says SENT; a run that stops before sending says NOT_SENT", async () => {
+  const { f } = collectingRecta();
+  assert.equal((await runCommand(spec("recta:move"), wallet().c, {}, move, f)).execution_state, "SENT");
+  const e = await runCommand(spec("recta:move"), wallet().c, {}, { ...move, amount: "1" }, f).catch((x) => x);
+  const shown = commandErrorOf(sdkErr, e);
+  assert.equal(shown.code, "RECTA_NOT_SENT");
+  assert.equal(JSON.parse(shown.message).transfer_sent, false);
 });
 
 test("R-2: a transfer that reverted on chain moved nothing: the agent is told its own route is free", async () => {
@@ -434,5 +577,7 @@ test("R-2: a transfer that reverted on chain moved nothing: the agent is told it
   assert.equal(body.transfer_sent, false);
   assert.equal(body.reverted_tx_hash, `0x${"02".repeat(32)}`);
   assert.match(shown.hint, /nothing moved/);
-  assert.doesNotMatch(shown.hint, /do not send/);
+  assert.match(shown.hint, new RegExp(`approval 0x${"01".repeat(32)} to the route's contract was mined and still stands`));
+  assert.equal(body.execution_state, "REVERTED");
+  assert.doesNotMatch(shown.hint, /do not send/i);
 });
