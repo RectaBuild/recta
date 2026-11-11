@@ -6,7 +6,7 @@ import { createRectaClient, safeErrorText, RectaCheckError, RectaDebtError, Rect
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.9" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.10" } as const;
 /** Sent on every request this package makes (its own and the client's), so Recta can count real use of it apart from
  *  other clients (no address, no key). */
 export const MCP_USER_AGENT = `recta-mcp/${SERVER_INFO.version}`;
@@ -54,7 +54,7 @@ const EVALUATE_INPUT = {
   type: "object",
   properties: {
     ...ROUTE,
-    amount: { type: "string", description: "Whole units, e.g. \"100\". Recta accepts 10 to 100000." },
+    amount: { type: "string", description: "Whole units, e.g. \"100\". Recta accepts from 3.5, with no upper limit." },
     baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included) (thorchain or chainflip from Bitcoin). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
     recipient: { type: "string", description: "Destination address; defaults to the local wallet." },
     guarantee_class: { type: "string", enum: ["COMMITTED_ENFORCED", "ANY"], description: "Default ANY." },
