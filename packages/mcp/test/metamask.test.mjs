@@ -210,3 +210,201 @@ test("package.json#mm, oclif.manifest.json and the command files match the comma
   // Only the commands that sign or send ask for wallet-submit.
   for (const c of COMMAND_SPECS) assert.equal(c.capabilities.includes("wallet-submit"), c.wallet === "sign" || c.wallet === "send", c.id);
 });
+
+// ---- The money path through the plugin (Fable M-3 on #19), and what an agent is told once money moved (M-1). ----
+import { encodeFunctionData, pad, parseAbi, recoverTypedDataAddress } from "viem";
+import { pins } from "@recta/client";
+
+const SPOKE = "0x09aea4b2242abc8bb4bb78d537a67a245a7bec64"; // Across on Base, pinned for base:USDC>arbitrum:USDC
+const USDC_ARB = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
+const AMOUNT = 10_000_000n;
+const expiry = () => String(Math.floor(Date.now() / 1000) + 3600);
+
+function artifact() {
+  const common = { chain_id: "8453", from: account.address, value_wei: "0", max_fee_per_gas_wei: "14000000", max_priority_fee_per_gas_wei: "1000000", transaction_type: "EIP1559", access_list: [] };
+  return {
+    schema: pins.EXECUTION_ARTIFACT_SCHEMA ?? "RECTA_COMMERCIAL_EXECUTION_ARTIFACT_V2",
+    result_id: "r_test",
+    commercial_expiry_unix: expiry(),
+    transactions: [
+      { ...common, role: "APPROVAL", to: pins.USDC_BASE, gas_limit: "60000", data: encodeFunctionData({ abi: parseAbi(["function approve(address,uint256)"]), args: [SPOKE, AMOUNT] }) },
+      {
+        ...common,
+        role: "EXECUTION",
+        to: SPOKE,
+        gas_limit: "200000",
+        data: encodeFunctionData({
+          abi: parseAbi(["function deposit(bytes32 depositor, bytes32 recipient, bytes32 inputToken, bytes32 outputToken, uint256 inputAmount, uint256 outputAmount, uint256 destinationChainId, bytes32 exclusiveRelayer, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityParameter, bytes message)"]),
+          args: [pad(account.address), pad(account.address), pad(pins.USDC_BASE), pad(USDC_ARB), AMOUNT, 9_950_000n, 42161n, pad("0x"), 1, 2, 0, "0x"],
+        }),
+      },
+    ],
+  };
+}
+
+const feeOffer = (kind = "DECISION") => {
+  const typed_data = {
+    domain: { name: "Permit2", chainId: 8453, verifyingContract: pins.PERMIT2 },
+    types: pins.FEE_PERMIT_TYPES,
+    primaryType: "PermitWitnessTransferFrom",
+    message: { permitted: { token: pins.USDC_BASE, amount: "500000" }, spender: pins.UPTO_PROXY, nonce: "7", deadline: String(Number(expiry()) + 86_400), witness: { to: pins.FEE_RECEIVER, facilitator: pins.FEE_FACILITATOR, validAfter: "0" } },
+  };
+  return kind === "DEBT"
+    ? { debt_id: "d_1", amount_usdc_atomic: "500000", typed_data }
+    : { max_fee_authorization_usdc_atomic: "500000", carried_usdc_atomic: "0", commercial_expiry_unix: expiry(), typed_data };
+};
+
+/** Recta with collection on, positive decision, and a report answer of `reportStatus`. */
+function collectingRecta({ reportStatus = 200 } = {}) {
+  const seen = [];
+  const f = async (url, init) => {
+    const u = new URL(String(url));
+    seen.push({ method: init?.method ?? "GET", path: u.pathname, headers: init?.headers ?? {}, body: init?.body });
+    if (u.pathname.endsWith("/wallet-policy")) return new Response(policy, { status: 200 });
+    if (u.pathname.endsWith("/execution-artifact")) return new Response(JSON.stringify({ status: "SIGNATURE_REQUIRED", commercial_expiry_unix: JSON.parse(JSON.stringify(feeOffer())).commercial_expiry_unix, fee_authorization: feeOffer() }), { status: 402 });
+    if (u.pathname.endsWith("/fee-authorization")) return new Response(JSON.stringify({ artifact: artifact() }), { status: 200 });
+    if (u.pathname.endsWith("/execution")) return new Response(JSON.stringify(reportStatus === 200 ? { status: "ACCRUED" } : { reason_code: "STORE_UNAVAILABLE" }), { status: reportStatus });
+    if (u.pathname.endsWith("/fee-debts")) return new Response(JSON.stringify({ status: "AUTHORIZED" }), { status: 200 });
+    return new Response(JSON.stringify({ result_id: "r_test", decision: { state: "VERIFIED_POSITIVE" } }), { status: 200 });
+  };
+  return { f, seen };
+}
+
+/** MetaMask with distinct hashes per transaction; `rewrite(tx, i)` changes what is mined; `readback(i)` may throw. */
+function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_000_000n, allowance = 1_000_000n } = {}) {
+  const requests = [];
+  const mined = new Map();
+  let n = 0;
+  const run = async (request, opts) => {
+    requests.push({ request, opts });
+    if (request.kind === "message") return { kind: "signature", status: "SIGNED", signature: await account.signMessage({ message: request.message }) };
+    if (request.kind === "typed-data") return { kind: "signature", status: "SIGNED", signature: await account.signTypedData(request.typedData) };
+    const i = n++;
+    const hash = `0x${String(i + 1).padStart(2, "0").repeat(32)}`;
+    const t = rewrite(request.transaction, i);
+    mined.set(hash, { i, tx: { from: account.address, to: t.to, input: t.data, value: t.value, gas: t.gas, maxFeePerGas: t.maxFeePerGas, maxPriorityFeePerGas: t.maxPriorityFeePerGas, chainId: request.chainId } });
+    return { kind: "transaction", status: "CONFIRMED", hash };
+  };
+  const publicClient = (chainId) => ({
+    getChainId: async () => chainId,
+    estimateFeesPerGas: async () => ({ maxFeePerGas: 7_000_000n, maxPriorityFeePerGas: 1_000_000n }),
+    waitForTransactionReceipt: async () => ({ status: "success" }),
+    getTransaction: async ({ hash }) => { const m = mined.get(hash); readback(m.i); return m.tx; },
+    readContract: async ({ functionName }) => (functionName === "balanceOf" ? balance : allowance),
+  });
+  const c = { walletStateManager: { read: () => ({ byokWallets: [{ id: "w1", address: account.address, namespace: "eip155" }], selectedWallet: { mode: "byok", namespace: "eip155", ref: { id: "w1" } } }) }, publicClient, walletExecutor: async () => run };
+  return { c, requests, mined };
+}
+
+const move = { "source-network": "base", "source-asset": "USDC", "destination-network": "arbitrum", amount: "10", "baseline-provider": "across", execute: true };
+const sdkErr = { CommandError: class extends Error { constructor(code, message, hint) { super(message); this.code = code; this.hint = hint; } } };
+
+test("M-3: mm recta move --execute signs the fee permit, sends Recta's two transactions exactly, reports both", async () => {
+  const { f, seen } = collectingRecta();
+  const w = wallet();
+  const out = await runCommand(spec("recta:move"), w.c, {}, move, f);
+  assert.equal(out.execution.report, "ACCRUED");
+  assert.equal(out.execution.fee, "AUTHORIZED");
+  const permit = w.requests.find((r) => r.request.kind === "typed-data").request;
+  assert.equal(permit.chainId, 8453);
+  assert.equal(await recoverTypedDataAddress({ ...permit.typedData, signature: await account.signTypedData(permit.typedData) }), account.address);
+  const txs = w.requests.filter((r) => r.request.kind === "transaction");
+  assert.equal(txs.length, 2);
+  const a = artifact().transactions;
+  for (const [i, { request }] of txs.entries()) {
+    assert.deepEqual(request.transaction, { to: a[i].to, data: a[i].data, value: 0n, gas: BigInt(a[i].gas_limit), maxFeePerGas: 14_000_000n, maxPriorityFeePerGas: 1_000_000n });
+  }
+  const report = JSON.parse(new TextDecoder().decode(seen.find((r) => r.path.endsWith("/execution")).body));
+  assert.deepEqual(report, { origin_tx_hash: `0x${"02".repeat(32)}`, approval_tx_hash: `0x${"01".repeat(32)}` });
+  // B-4: Recta can tell mm's use apart from the MCP server's.
+  assert.match(seen.at(-1).headers["user-agent"], /^recta-mcp\/0\.1\.12 \(mm\)$/);
+});
+
+const transferSent = async (opts, recta = collectingRecta()) => {
+  const w = wallet(opts);
+  const e = await runCommand(spec("recta:move"), w.c, {}, move, recta.f).catch((x) => x);
+  return { shown: commandErrorOf(sdkErr, e), w };
+};
+
+test("M-1 (a): MetaMask changes the transfer's gas: the error says it was sent, not to send it again, and how to report it", async () => {
+  const { shown } = await transferSent({ rewrite: (t, i) => (i === 1 ? { ...t, gas: t.gas + 1n } : t) });
+  assert.equal(shown.code, "RECTA_TRANSFER_SENT");
+  const body = JSON.parse(shown.message);
+  assert.equal(body.check, "wallet_changed_transaction");
+  assert.equal(body.result_id, "r_test");
+  assert.equal(body.origin_tx_hash, `0x${"02".repeat(32)}`);
+  assert.deepEqual(body.approval_tx_hashes, [`0x${"01".repeat(32)}`]);
+  assert.match(shown.hint, /do not send it again/);
+  assert.match(shown.hint, new RegExp(`mm recta report --result-id r_test --origin-tx-hash 0x${"02".repeat(32)} --approval-tx-hash 0x${"01".repeat(32)}`));
+  assert.doesNotMatch(body.message, /wallet_changed_transaction:/, "no duplicated prefix (B-2)");
+});
+
+test("M-1 (b): the transfer cannot be read back: same answer, with the hash", async () => {
+  const { shown } = await transferSent({ readback: (i) => { if (i === 1) throw new Error("TransactionNotFoundError"); } });
+  assert.equal(shown.code, "RECTA_TRANSFER_SENT");
+  const body = JSON.parse(shown.message);
+  assert.equal(body.check, "wallet_readback");
+  assert.equal(body.origin_tx_hash, `0x${"02".repeat(32)}`);
+  assert.match(shown.hint, /mm recta report --result-id r_test/);
+});
+
+test("M-1 (c): the report fails: the result_id and both hashes are kept for mm recta report", async () => {
+  const { shown } = await transferSent({}, collectingRecta({ reportStatus: 503 }));
+  assert.equal(shown.code, "RECTA_TRANSFER_SENT");
+  const body = JSON.parse(shown.message);
+  assert.equal(body.error, "HTTP");
+  assert.equal(body.result_id, "r_test");
+  assert.equal(body.origin_tx_hash, `0x${"02".repeat(32)}`);
+  assert.match(shown.hint, /mm recta report --result-id r_test/);
+});
+
+test("M-1: MetaMask changes the approval: only the approval was sent, the transfer never is", async () => {
+  const { shown, w } = await transferSent({ rewrite: (t, i) => (i === 0 ? { ...t, maxFeePerGas: 1n } : t) });
+  assert.equal(shown.code, "RECTA_APPROVAL_SENT");
+  assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 1);
+  assert.equal(JSON.parse(shown.message).transfer_sent, undefined);
+  assert.match(shown.hint, /no transfer/);
+});
+
+test("approve-fee: one bounded approve to Permit2 on Base; a foreign --address is refused before anything is sent (B-1)", async () => {
+  const w = wallet({ allowance: 0n });
+  const out = await runCommand(spec("recta:approve-fee"), w.c, {}, { "amount-usdc": "0.5" }, collectingRecta().f);
+  assert.equal(out.approved_usdc_atomic, "500000");
+  const [{ request }] = w.requests;
+  assert.equal(request.chainId, 8453);
+  assert.equal(request.transaction.to.toLowerCase(), pins.USDC_BASE.toLowerCase());
+  assert.equal(request.transaction.data, encodeFunctionData({ abi: parseAbi(["function approve(address,uint256)"]), args: [pins.PERMIT2, 500_000n] }));
+
+  const other_ = wallet();
+  await assert.rejects(runCommand(spec("recta:approve-fee"), other_.c, {}, { address: other.address }, collectingRecta().f), /is not the wallet selected in mm/);
+  assert.equal(other_.requests.length, 0);
+  // mm's selection unreadable: one signature proves the address first, and a mismatch sends nothing.
+  const blind = wallet();
+  blind.c.walletStateManager = { read: () => ({}) };
+  await assert.rejects(runCommand(spec("recta:approve-fee"), blind.c, {}, { address: other.address }, collectingRecta().f), /does not recover/);
+  assert.deepEqual(blind.requests.map((r) => r.request.kind), ["message"]);
+});
+
+test("pay-debt: signs the offered debt permit after the same checks, never above --max-fee-usdc", async () => {
+  const { f, seen } = collectingRecta();
+  const w = wallet();
+  const out = await runCommand(spec("recta:pay-debt"), w.c, {}, { "debt-offer": JSON.stringify(feeOffer("DEBT")) }, f);
+  assert.equal(out.status, "AUTHORIZED");
+  // The permit, then the signed request that carries it.
+  assert.deepEqual(w.requests.map((r) => r.request.kind), ["typed-data", "message"]);
+  assert.equal(JSON.parse(new TextDecoder().decode(seen.at(-1).body)).debt_id, "d_1");
+  await assert.rejects(runCommand(spec("recta:pay-debt"), wallet().c, {}, { "debt-offer": JSON.stringify(feeOffer("DEBT")), "max-fee-usdc": "0.4" }, f), (e) => JSON.stringify(e.body ?? e.message).includes("fee_amount_limit"));
+  await assert.rejects(runCommand(spec("recta:pay-debt"), wallet().c, {}, { "debt-offer": "{" }, f), /not valid JSON/);
+});
+
+test("M-2 and B-2: agent texts name only declarable baselines and mm commands", async () => {
+  const baseline = spec("recta:move").inputs.find((i) => i.flag === "baseline-provider").message;
+  assert.doesNotMatch(baseline, /relay|cctp/i);
+  assert.match(spec("recta:move").inputs.find((i) => i.flag === "amount").message, /3\.5/);
+  const skill = readFileSync(new URL("../../../skills/recta-metamask-agent-wallet/SKILL.md", import.meta.url), "utf8");
+  assert.doesNotMatch(skill, /CCTP|Relay|mm swap\)/);
+  const { f } = collectingRecta();
+  const out = await runCommand(spec("recta:move"), wallet().c, {}, { ...move, execute: false }, f);
+  assert.doesNotMatch(out.preview.note, /recta_execute|recta_fee_funds|recta_approve_fee/);
+  assert.match(out.preview.note, /mm recta move --execute/);
+});

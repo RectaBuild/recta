@@ -6,7 +6,8 @@ description: When your agent moves stablecoins between chains with the MetaMask 
 # Recta in the MetaMask agent wallet (`mm`)
 
 Use this skill when you are about to move USDC, USDT or USDG from one EVM chain to another and you already have a
-route in mind (Across, CCTP, Stargate, Relay, LI.FI, `mm swap`…). Recta compares that route (your *baseline*) with
+route in mind. Declare it as `--baseline-provider`: one of the corridor's `declarable_baselines` that `mm recta fit`
+lists (across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi). Recta compares that route (your *baseline*) with
 every route it knows, read at the same block. If a cheaper one can be proven, your MetaMask wallet signs and sends it;
 Recta charges exactly 5 % of the saving it verifies on chain. If not, keep your route: nothing is owed.
 
@@ -27,6 +28,8 @@ Recta charges exactly 5 % of the saving it verifies on chain. If not, keep your 
      Recta's checked transactions and reports them. The answer's `execution.report` is `ACCRUED`, `PENDING` or
      `REFUSED`.
 3. After `PENDING`: `mm recta report --result-id <id> --origin-tx-hash <hash> --json` later.
+   An error with code `RECTA_TRANSFER_SENT` means the transfer already left: never send it again, by Recta or by
+   your own route. Its hint carries the exact `mm recta report …` command.
 4. An error with code `RECTA_DEBT`: an earlier fee could not be collected. Pay it with
    `mm recta pay-debt --debt-offer '<the debt_offer JSON from the error>'`, then evaluate again.
 

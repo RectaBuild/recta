@@ -1,7 +1,7 @@
 import type { Hex } from "viem";
 import { RectaCheckError } from "@recta/client";
 import { configFromEnv, networkChainIds } from "../index.js";
-import { metaMaskRectaServer, selectedMetaMaskAddress, type MetaMaskPublicClientFor, type MetaMaskWalletExecutor, type MetaMaskWalletStateLike } from "../metamask.js";
+import { metaMaskRectaServer, metaMaskSigner, selectedMetaMaskAddress, type MetaMaskPublicClientFor, type MetaMaskSentTransaction, type MetaMaskWalletExecutor, type MetaMaskWalletStateLike } from "../metamask.js";
 
 /**
  * The `mm recta …` commands: Recta as a plugin of the MetaMask Agent Wallet CLI (`mm plugins install @recta/mcp`).
@@ -33,8 +33,8 @@ const ROUTE: readonly InputSpec[] = [
 ];
 const TRANSFER: readonly InputSpec[] = [
   ...ROUTE,
-  text("amount", "Amount in whole units of the asset, e.g. 100 for 100 USDC.", { required: true }),
-  text("baseline-provider", "The route you would use without Recta, e.g. stargate_v2, across, relay, lifi.", { required: true }),
+  text("amount", "Amount in whole units of the asset (100 means 100 USDC), at least 3.5, no maximum.", { required: true }),
+  text("baseline-provider", "The route you would use without Recta, one of the corridor's declarable_baselines in mm recta fit: across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi.", { required: true }),
   text("recipient", "Receiving address on the destination; default the wallet itself."),
   text("guarantee-class", "COMMITTED_ENFORCED or ANY (default ANY)."),
   text("latency-class", "SECONDS, MINUTES, FINALITY_BOUND or ANY (default ANY)."),
@@ -72,14 +72,35 @@ export class RectaToolError extends Error {
 
 const answer = async (call: ToolCall, name: string, input: Record<string, unknown>) => {
   const r = await call(name, input);
-  if (r.isError) throw new RectaToolError(r.body);
+  if (r.isError) throw new RectaToolError(withoutCheckPrefix(r.body));
   return r.body;
 };
+
+/** The MCP server's CHECK_FAILED message repeats the check ("fee_amount: …"); say it once (Fable B-2 on #19). */
+function withoutCheckPrefix(body: Record<string, unknown>): Record<string, unknown> {
+  const check = body["check"];
+  const message = body["message"];
+  return typeof check === "string" && typeof message === "string" && message.startsWith(`${check}: `) ? { ...body, message: message.slice(check.length + 2) } : body;
+}
 
 const one = (name: string): CommandSpec["run"] => (call, args) => answer(call, name, args);
 
 /** Every chain a Recta route can start from (the client's pinned routes), and Base, where the fee is paid. */
 const ROUTE_CHAINS: readonly number[] = [...new Set([...networkChainIds().values(), 8453])].sort((a, b) => a - b);
+
+/** The MCP server's preview names its tools; here they are commands. */
+function asCommands(preview: Record<string, unknown>): Record<string, unknown> {
+  const note = preview["note"];
+  if (typeof note !== "string") return preview;
+  return { ...preview, note: note.replaceAll("recta_execute", "mm recta move --execute").replaceAll("recta_fee_funds", "mm recta fee-funds").replaceAll("recta_approve_fee", "mm recta approve-fee") };
+}
+
+/** An error as the MCP server would answer it. */
+function bodyOf(e: unknown): Record<string, unknown> {
+  if (e instanceof RectaToolError) return e.body;
+  if (e instanceof RectaCheckError) return { error: "CHECK_FAILED", check: e.check, message: e.message.startsWith(`${e.check}: `) ? e.message.slice(e.check.length + 2) : e.message };
+  return { error: "FAILED", message: e instanceof Error ? e.message.slice(0, 500) : String(e).slice(0, 500) };
+}
 
 const NO_SAVING = "No saving Recta can prove at this chain state: keep your own route. Nothing is owed.";
 
@@ -122,11 +143,16 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
       if (flags["execute"] !== true) {
         return {
           evaluation,
-          preview: await answer(call, "recta_preview", { result_id: resultId }),
+          preview: asCommands(await answer(call, "recta_preview", { result_id: resultId })),
           next: "Nothing was signed beyond the request or sent. To move it through Recta, run the same command with --execute: Recta evaluates again at the new chain state, then MetaMask signs the fee permit and sends the checked transactions.",
         };
       }
-      return { evaluation, execution: await answer(call, "recta_execute", { result_id: resultId }) };
+      try {
+        return { evaluation, execution: await answer(call, "recta_execute", { result_id: resultId }) };
+      } catch (e) {
+        // Keep what `mm recta report` needs: this process is the only one that knows the result_id.
+        throw e instanceof RectaToolError ? new RectaToolError({ ...e.body, result_id: resultId }) : new RectaToolError({ ...bodyOf(e), result_id: resultId });
+      }
     },
   },
   {
@@ -216,15 +242,31 @@ export async function runCommand(spec: CommandSpec, ctx: MmContextLike, io: unkn
     throw new RectaCheckError("input", (e instanceof Error ? e.message : String(e)).replace(/RECTA_([A-Z_]+)/g, (_, k: string) => `--${k.toLowerCase().replaceAll("_", "-")}`));
   }
   let address: Hex | undefined = config.address;
+  let selected: Hex | undefined;
+  if (spec.wallet !== "none" && ctx.walletStateManager !== undefined) {
+    try { selected = selectedMetaMaskAddress(ctx.walletStateManager.read()); } catch { selected = undefined; }
+  }
   if (spec.wallet !== "none" && address === undefined) {
-    if (ctx.walletStateManager === undefined) throw new RectaCheckError("wallet_address", "mm gave this command no wallet state: pass --address");
-    address = selectedMetaMaskAddress(ctx.walletStateManager.read());
+    if (selected === undefined) throw new RectaCheckError("wallet_address", "could not tell which MetaMask wallet is selected: pass --address with the EVM address of the wallet mm signs with");
+    address = selected;
   }
   const signs = spec.wallet === "sign" || spec.wallet === "send";
+  // Fable B-1 on #19: a signing command never runs for an address other than the wallet mm has selected.
+  if (signs && selected !== undefined && address !== undefined && selected.toLowerCase() !== address.toLowerCase()) {
+    throw new RectaCheckError("wallet_address", `--address ${address} is not the wallet selected in mm (${selected}): select it with mm, or drop --address`);
+  }
+  const sent: MetaMaskSentTransaction[] = [];
+  const execute = signs ? await ctx.walletExecutor(io, spec.id) : undefined;
+  // approve-fee is the one command that sends without signing first: when mm's selection cannot be read, prove the
+  // address with one signature before anything is sent.
+  if (spec.id === "recta:approve-fee" && selected === undefined && address !== undefined && execute !== undefined) {
+    await metaMaskSigner({ address, execute, publicClientFor: (id) => ctx.publicClient(id) }).signMessage(`Recta: ${address} approves USDC to Permit2 for Recta's fees on Base.`);
+  }
   const call = metaMaskRectaServer({
     keyless: spec.wallet === "none" || (spec.wallet === "read" && spec.id === "recta:trial"),
     ...(address === undefined ? {} : { address }),
-    ...(signs ? { execute: await ctx.walletExecutor(io, spec.id) } : {}),
+    ...(execute === undefined ? {} : { execute }),
+    onSent: (t) => { sent.push(t); },
     publicClientFor: (id) => ctx.publicClient(id),
     limits: config,
     allowExecute: spec.wallet === "send",
@@ -233,7 +275,29 @@ export async function runCommand(spec: CommandSpec, ctx: MmContextLike, io: unkn
   });
   const args: Record<string, unknown> = {};
   for (const input of spec.inputs) if (input.arg !== undefined && present(flags[input.flag])) args[input.arg] = flags[input.flag];
-  const out = await spec.run(call, args, flags);
+  let out: Record<string, unknown>;
+  try {
+    out = await spec.run(call, args, flags);
+  } catch (e) {
+    if (sent.length === 0) throw e;
+    // Fable M-1 on #19: money may already have moved. Every answer from here says so and keeps the hashes.
+    const body = bodyOf(e);
+    const approvals = sent.filter((t) => t.approval).map((t) => t.hash);
+    const transfer = sent.find((t) => !t.approval)?.hash;
+    const resultId = typeof body["result_id"] === "string" ? body["result_id"] : undefined;
+    const report = transfer !== undefined && resultId !== undefined
+      ? ` Report it once it is mined: mm recta report --result-id ${resultId} --origin-tx-hash ${transfer}${approvals.length > 0 && spec.id === "recta:move" ? ` --approval-tx-hash ${approvals[0]}` : ""}`
+      : "";
+    throw new RectaToolError({
+      ...body,
+      sent_tx_hashes: sent.map((t) => t.hash),
+      ...(transfer === undefined ? {} : { origin_tx_hash: transfer, transfer_sent: true }),
+      ...(approvals.length === 0 ? {} : { approval_tx_hashes: approvals }),
+      next: transfer !== undefined
+        ? `The transfer was sent (${transfer}): do not send it again, by Recta or by your own route.${report}`
+        : `An approval was sent (${approvals.join(", ")}) but no transfer: do not send the approval again.`,
+    });
+  }
   return JSON.parse(JSON.stringify(out, (_, x) => (typeof x === "bigint" ? x.toString() : x))) as Record<string, unknown>;
 }
 
@@ -251,11 +315,14 @@ const HINT = "Recta's guide for agents: https://api.recta.build/llms.txt";
 /** The error `mm` shows: the MCP server's own JSON answer, with a code an agent can branch on. */
 export function commandErrorOf(sdk: MmPluginSdk, e: unknown): Error {
   if (e instanceof RectaToolError) {
+    if (e.body["transfer_sent"] === true || Array.isArray(e.body["sent_tx_hashes"])) {
+      return new sdk.CommandError(e.body["transfer_sent"] === true ? "RECTA_TRANSFER_SENT" : "RECTA_APPROVAL_SENT", e.message, String(e.body["next"]));
+    }
     const kind = typeof e.body["error"] === "string" ? (e.body["error"] as string) : "FAILED";
     const hint = kind === "DEBT" ? "Pay it with: mm recta pay-debt --debt-offer '<the debt_offer JSON above>'" : HINT;
     return new sdk.CommandError(`RECTA_${kind.replace(/[^A-Z_]/g, "")}`, e.message, hint);
   }
-  if (e instanceof RectaCheckError) return new sdk.CommandError("RECTA_CHECK_FAILED", JSON.stringify({ error: "CHECK_FAILED", check: e.check, message: e.message }), HINT);
+  if (e instanceof RectaCheckError) return new sdk.CommandError("RECTA_CHECK_FAILED", JSON.stringify(bodyOf(e)), HINT);
   return e instanceof Error ? e : new Error(String(e));
 }
 

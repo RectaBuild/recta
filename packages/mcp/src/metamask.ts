@@ -1,5 +1,5 @@
 import { recoverMessageAddress, recoverTypedDataAddress, type Hex, type PublicClient } from "viem";
-import { pins, RectaCheckError, viemChainReader, type RectaChainReader, type RectaSigner, type RectaTransaction, type RectaTypedData } from "@recta/client";
+import { pins, RectaCheckError, safeErrorText, viemChainReader, type RectaChainReader, type RectaSigner, type RectaTransaction, type RectaTypedData } from "@recta/client";
 import { cappedGas, keylessSigner, networkChainIds } from "./index.js";
 import { createLocalServer, type LocalServerOptions } from "./server.js";
 
@@ -37,6 +37,8 @@ export type MetaMaskPublicClientFor = (chainId: number) => PublicClient;
 /** Terminal job states in which MetaMask did not sign or did not broadcast (fox-sdk TX_JOB_STATUS / SIGN_JOB_STATUS). */
 const FAILED_STATES: ReadonlySet<string> = new Set(["DENIED", "EXPIRED", "FAILED", "BROADCAST_FAILED", "BROADCAST_TRACKING_EXPIRED", "CONFIRMATION_TRACKING_EXPIRED"]);
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
+/** ERC-20 approve(address,uint256). */
+const APPROVE_SELECTOR = "0x095ea7b3";
 const SIGNATURE = /^0x[0-9a-fA-F]{130}$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
@@ -52,7 +54,20 @@ function refused(result: MetaMaskWalletResult, what: string): never {
  * with the gas limit and fee caps Recta committed to, and is read back once mined: if MetaMask changed any committed
  * field, the next step (the transfer after an approval, or the report) is refused.
  */
-export function metaMaskSigner(args: { readonly address: Hex; readonly execute: MetaMaskWalletExecutor; readonly publicClientFor: MetaMaskPublicClientFor }): RectaSigner {
+export interface MetaMaskSentTransaction {
+  readonly hash: Hex;
+  readonly chainId: number;
+  /** An ERC-20 `approve` (Recta's approval transaction, or the fee approval), not the transfer itself. */
+  readonly approval: boolean;
+}
+
+export function metaMaskSigner(args: {
+  readonly address: Hex;
+  readonly execute: MetaMaskWalletExecutor;
+  readonly publicClientFor: MetaMaskPublicClientFor;
+  /** Called as soon as MetaMask returns a transaction hash, before it is read back: from then on money may have moved. */
+  readonly onSent?: (sent: MetaMaskSentTransaction) => void;
+}): RectaSigner {
   const { address, execute, publicClientFor } = args;
   if (!ADDRESS.test(address)) throw new RectaCheckError("input", "the MetaMask wallet address must be 0x + 40 hex characters");
   const same = (a: string) => a.toLowerCase() === address.toLowerCase();
@@ -79,11 +94,17 @@ export function metaMaskSigner(args: { readonly address: Hex; readonly execute: 
       if (result.kind !== "transaction" || result.failureCode !== undefined || (result.status !== undefined && FAILED_STATES.has(result.status))) refused(result, "send Recta's transaction");
       if (typeof result.hash !== "string" || !HEX32.test(result.hash)) throw new RectaCheckError("wallet_transaction", "MetaMask returned no transaction hash");
       const hash = result.hash as Hex;
+      args.onSent?.({ hash, chainId, approval: data.slice(0, 10).toLowerCase() === APPROVE_SELECTOR });
       // Read back what was mined: Recta verifies the committed transaction field by field, so a changed one is worth
       // nothing and must stop the route here.
       const client = publicClientFor(chainId);
-      await client.waitForTransactionReceipt({ hash });
-      const sent = await client.getTransaction({ hash });
+      let sent: Awaited<ReturnType<PublicClient["getTransaction"]>>;
+      try {
+        await client.waitForTransactionReceipt({ hash });
+        sent = await client.getTransaction({ hash });
+      } catch (e) {
+        throw new RectaCheckError("wallet_readback", `MetaMask sent ${hash}, but reading it back failed (${safeErrorText(e).slice(0, 200)}): it may still be mined, so do not send it again`);
+      }
       const changed = [
         sent.from.toLowerCase() !== address.toLowerCase() && "from",
         (sent.to ?? "").toLowerCase() !== to.toLowerCase() && "to",
@@ -94,7 +115,7 @@ export function metaMaskSigner(args: { readonly address: Hex; readonly execute: 
         sent.maxPriorityFeePerGas !== maxPriorityFeePerGas && "maxPriorityFeePerGas",
         sent.chainId !== undefined && sent.chainId !== chainId && "chainId",
       ].filter((x): x is string => x !== false);
-      if (changed.length > 0) throw new RectaCheckError("wallet_changed_transaction", `MetaMask sent ${hash} with a different ${changed.join(", ")} than Recta committed: Recta will not accrue it, and nothing more is sent`);
+      if (changed.length > 0) throw new RectaCheckError("wallet_changed_transaction", `MetaMask sent ${hash} with a different ${changed.join(", ")} than Recta committed: it was mined as sent, so do not send it again; nothing more is sent from here`);
       return hash;
     },
   };
@@ -109,14 +130,16 @@ export function metaMaskChainReader(publicClientFor: MetaMaskPublicClientFor): R
 export interface MetaMaskWalletStateLike {
   readonly byokWallets?: readonly { readonly id?: string; readonly name?: string | null; readonly address?: string; readonly namespace?: string }[];
   readonly remoteWallets?: readonly { readonly name?: string | null; readonly address?: string; readonly namespace?: string }[];
-  readonly selectedWallet?: { readonly namespace?: string; readonly ref?: { readonly id?: string; readonly address?: string; readonly name?: string } };
+  readonly selectedWallet?: { readonly mode?: string; readonly namespace?: string; readonly ref?: { readonly id?: string; readonly address?: string; readonly name?: string } };
 }
 
 /** The EVM address of the wallet selected in `mm` (`mm wallet use`), or a clear error naming `--address`. */
 export function selectedMetaMaskAddress(state: MetaMaskWalletStateLike): Hex {
   const ref = state.selectedWallet?.ref;
   const namespace = state.selectedWallet?.namespace;
-  const wallets = [...(state.byokWallets ?? []), ...(state.remoteWallets ?? [])].filter((w) => typeof w.address === "string" && ADDRESS.test(w.address));
+  const mode = state.selectedWallet?.mode;
+  const pool = mode === "byok" ? (state.byokWallets ?? []) : mode === "server" ? (state.remoteWallets ?? []) : [...(state.byokWallets ?? []), ...(state.remoteWallets ?? [])];
+  const wallets = pool.filter((w) => typeof w.address === "string" && ADDRESS.test(w.address));
   const evm = wallets.filter((w) => namespace === undefined || w.namespace === undefined || w.namespace === namespace);
   let found: typeof evm = [];
   if (ref?.address !== undefined) found = evm.filter((w) => w.address!.toLowerCase() === ref.address!.toLowerCase());
@@ -126,6 +149,18 @@ export function selectedMetaMaskAddress(state: MetaMaskWalletStateLike): Hex {
   const addresses = new Set(found.map((w) => w.address!.toLowerCase()));
   if (addresses.size !== 1) throw new RectaCheckError("wallet_address", "could not tell which MetaMask wallet is selected: pass --address with the EVM address of the wallet mm signs with");
   return found[0]!.address as Hex;
+}
+
+/** Marks the server's `recta-mcp/<version>` User-Agent as coming from `mm`, so Recta's panel can tell them apart. */
+function withMmUserAgent(f: typeof fetch): typeof fetch {
+  return (input, init) => {
+    const headers = new Headers(init?.headers);
+    const ua = headers.get("user-agent");
+    if (ua !== null && !ua.endsWith(" (mm)")) headers.set("user-agent", `${ua} (mm)`);
+    const plain: Record<string, string> = {};
+    headers.forEach((value, key) => { plain[key] = value; });
+    return f(input, { ...init, headers: plain });
+  };
 }
 
 /** Limits as the commands take them; every default matches `@recta/mcp`'s. */
@@ -150,6 +185,7 @@ export function metaMaskRectaServer(args: {
   readonly limits: MetaMaskRectaLimits;
   readonly allowExecute: boolean;
   readonly referrer?: string;
+  readonly onSent?: (sent: MetaMaskSentTransaction) => void;
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
 }) {
@@ -159,7 +195,7 @@ export function metaMaskRectaServer(args: {
     throw new RectaCheckError("signs_nothing", "this command signs nothing");
   };
   const options: LocalServerOptions = {
-    signer: keyless ? keylessSigner(args.address) : metaMaskSigner({ address: args.address!, execute: args.execute ?? refuse, publicClientFor: args.publicClientFor }),
+    signer: keyless ? keylessSigner(args.address) : metaMaskSigner({ address: args.address!, execute: args.execute ?? refuse, publicClientFor: args.publicClientFor, ...(args.onSent === undefined ? {} : { onSent: args.onSent }) }),
     keyless,
     chain: metaMaskChainReader(args.publicClientFor),
     limits: { maxPermitUsdcAtomic: args.limits.maxPermitUsdcAtomic, maxNativeValueWei: args.limits.maxNativeValueWei, minOutputBps: args.limits.minOutputBps },
@@ -170,7 +206,7 @@ export function metaMaskRectaServer(args: {
       return cappedGas(await args.publicClientFor(id).estimateFeesPerGas(), args.limits);
     },
     ...(args.referrer === undefined ? {} : { referrer: args.referrer }),
-    ...(args.fetch === undefined ? {} : { fetch: args.fetch }),
+    fetch: withMmUserAgent(args.fetch ?? fetch),
     ...(args.now === undefined ? {} : { now: args.now }),
   };
   const server = createLocalServer(options);
