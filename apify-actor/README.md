@@ -1,6 +1,6 @@
 # Recta: cross-chain transfer preflight for AI agents
 
-Before your agent bridges USDC, USDT, USDG or BTC between blockchains, Recta checks every route it knows (Across, CCTP,
+Before your agent bridges USDC, USDT or USDG between blockchains, Recta checks every route it knows (Across, CCTP,
 Stargate, USDT0, deBridge and others) at the same block and proves whether a cheaper one exists. **Free if not; exactly
 5 % of the saving verified on chain if so.** Your agent keeps at least 95 % of every saving.
 

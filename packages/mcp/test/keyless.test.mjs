@@ -69,3 +69,11 @@ test("with a key the trial's sender is always the wallet (Fable L-1 on #13)", as
   await server.call("recta_trial_evaluation", { ...args, sender: addr });
   assert.equal(JSON.parse(calls.at(-1).body).sender, wallet);
 });
+
+// Text review 2026-11-11 (Fable N-12): an HTTP error names Recta's reason, its message on one line and whether to retry.
+test("RectaHttpError carries Recta's reason, one-line message and retryability", async () => {
+  const { RectaHttpError } = await import("@recta/client");
+  const e = new RectaHttpError(503, { reason_code: "CAPTURE_FAILED_CLOSED", message: "line1\nline2  x", retryable: true });
+  assert.equal(e.message, "Recta answered HTTP 503 CAPTURE_FAILED_CLOSED: line1 line2 x (retryable)");
+  assert.equal(new RectaHttpError(404, "x").message, "Recta answered HTTP 404");
+});

@@ -5,7 +5,7 @@ description: Before moving stablecoins from one blockchain to another (bridge, c
 
 # Recta: preflight before a cross-chain transfer
 
-Use this skill whenever you are about to move USDC, USDT or USDG from one EVM chain to another and you already have a
+Use this skill whenever you are about to move USDC, USDT or USDG from an EVM chain to another chain and you already have a
 route in mind (Across, CCTP, Stargate, USDT0, deBridge, Relay…). Recta compares that route (your *baseline*) with every
 route it knows, read at the same block, and tells you whether a cheaper one exists.
 

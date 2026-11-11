@@ -55,7 +55,7 @@ const EVALUATE_INPUT = {
   properties: {
     ...ROUTE,
     amount: { type: "string", description: "How much of source_asset to send, in whole tokens (not cents, not wei): \"100\" with USDC means 100 USDC. Minimum 3.5 for stablecoins (about 3.5 USD). No maximum." },
-    baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included) (thorchain or chainflip from Bitcoin). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
+    baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
     recipient: { type: "string", description: "Destination address; defaults to the local wallet." },
     guarantee_class: { type: "string", enum: ["COMMITTED_ENFORCED", "ANY"], description: "Default ANY." },
     latency_class: { type: "string", enum: ["SECONDS", "MINUTES", "FINALITY_BOUND", "ANY"], description: "Default ANY." },

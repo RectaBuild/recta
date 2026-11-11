@@ -15,7 +15,7 @@ export class RectaHttpError extends Error {
     // The reason, Recta's own message and whether a retry may succeed, so an agent reading only the error knows why
     // it failed and what to do (before 0.1.7 it read only "Recta answered HTTP 503 (CAPTURE_FAILED_CLOSED)").
     const record = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
-    const message = typeof record["message"] === "string" ? record["message"].slice(0, 500) : undefined;
+    const message = typeof record["message"] === "string" ? record["message"].replace(/\s+/g, " ").slice(0, 500) : undefined;
     const retryable = typeof record["retryable"] === "boolean" ? (record["retryable"] ? " (retryable)" : " (not retryable)") : "";
     super(`Recta answered HTTP ${status}${reason === undefined ? "" : ` ${reason}`}${message === undefined ? "" : `: ${message}`}${retryable}`);
     this.reasonCode = reason;
