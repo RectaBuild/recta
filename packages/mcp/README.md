@@ -135,6 +135,43 @@ const tools = await getOnChainTools({
 The plugin never sends a transaction: a GOAT `sendTransaction` takes no gas limit or fee caps, and Recta's route is
 committed to exact ones. Preview the route there and send it with `@recta/client` or this server.
 
+## MetaMask Agent Wallet (`mm`)
+
+This package is also a plugin for MetaMask's agent wallet CLI (`mm`, `@metamask/agent-wallet` 7.3 or later). The
+agent's MetaMask wallet signs Recta's requests and fee permits and sends Recta's transactions itself, through
+MetaMask's own policy (and its two-factor approval, if you turned it on). No private key is set anywhere.
+
+```sh
+mm config set experimentalPlugins true   # mm's plugin system is in beta and off by default
+mm plugins install @recta/mcp            # shows each command's permissions and asks you to accept them
+mm recta move --source-network base --source-asset USDC --destination-network arbitrum --amount 100 --baseline-provider stargate_v2 --json
+```
+
+| Command | Permissions | What it does |
+| --- | --- | --- |
+| `mm recta fit` | none | Free, signs nothing: does Recta cover the corridor? |
+| `mm recta trial` | wallet-read | Free, signs nothing: is there a cheaper provable route, and what would 5 % of the saving be? |
+| `mm recta move` | wallet-read, wallet-submit | Signs the evaluation (free). With no saving: keep your route. With a saving: shows the fee ceiling. Add `--execute` to sign the fee permit, send the route and report it. |
+| `mm recta report` | wallet-read, wallet-submit | Reports an executed route again (after `PENDING`). |
+| `mm recta ledger` | wallet-read, wallet-submit | Your Recta fees and whether each was collected. |
+| `mm recta fee-funds` | wallet-read | Free, signs nothing: your USDC on Base and its allowance to Permit2. |
+| `mm recta approve-fee` | wallet-read, wallet-submit | One bounded `USDC.approve(Permit2, amount)` on Base, never unlimited. |
+| `mm recta pay-debt` | wallet-read, wallet-submit | Signs the debt permit Recta offered after a fee it could not collect. |
+
+`move` runs in one go, because each `mm` command is a separate process: without `--execute` it stops after the
+preview; with `--execute` Recta evaluates again at the current chain state and then executes. Limits are flags with
+the same defaults as this server: `--max-fee-usdc` (1), `--max-native-wei` (0), `--min-output-bps` (9900),
+`--max-fee-gwei` (50), `--max-priority-fee-gwei` (2) and `--referrer`. The wallet is the one selected in `mm`, or
+`--address`.
+
+Every signature must recover to that address before Recta sees it. Every transaction is sent with Recta's exact gas
+limit and fee caps, and read back once mined: if MetaMask changed any committed field, nothing more is sent (Recta
+would not accrue that route). Errors keep this server's JSON answer, with codes such as `RECTA_CHECK_FAILED`,
+`RECTA_HTTP` and `RECTA_DEBT`. In code, `@recta/mcp/metamask` exports `metaMaskSigner` for MetaMask's wallet executor.
+
+This plugin was built against the published declarations of `@metamask/agent-wallet` 7.3.0; it imports MetaMask's
+plugin base class from the running `mm`, and neither bundles nor depends on MetaMask's packages.
+
 ## Referral for integrators
 
 If you ship Recta inside a plugin, framework or agent template, set your own EVM address once as the `referrer` (`RECTA_REFERRER` for this server, the `referrer` option of the AgentKit provider and the GOAT plugin) and

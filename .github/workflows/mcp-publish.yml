@@ -37,6 +37,9 @@ jobs:
           # @recta/client must already be published at the exact version package.json names.
           npm install --ignore-scripts --no-package-lock
           npx tsc -p tsconfig.build.json
+          # The MetaMask agent wallet plugin: mm refuses a plugin without a prebuilt oclif.manifest.json.
+          node scripts/mm-manifest.mjs
+          test -f oclif.manifest.json
       - name: Publish with provenance
         env:
           FIRST_PUBLISH_TOKEN: ${{ secrets.NPM_FIRST_PUBLISH_TOKEN }}
