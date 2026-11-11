@@ -90,7 +90,8 @@ test("signer: a transaction is sent with Recta's exact gas and fee caps, and ref
     await assert.rejects(s.sendTransaction(tx), (e) => e.check === "wallet_changed_transaction", `change ${Object.keys(change)}`);
   }
   const failed = metaMaskSigner({ address: account.address, execute: executor(account, { result: { status: "BROADCAST_FAILED" } }).run, publicClientFor: publicClients() });
-  await assert.rejects(failed.sendTransaction(tx), /MetaMask did not send/);
+  // A failure that still carries a hash may have been mined (Fable R-1 on #19).
+  await assert.rejects(failed.sendTransaction(tx), /may have been sent/);
 });
 
 test("the selected mm wallet's address, or a clear request for --address", () => {
@@ -271,7 +272,7 @@ function collectingRecta({ reportStatus = 200 } = {}) {
 }
 
 /** MetaMask with distinct hashes per transaction; `rewrite(tx, i)` changes what is mined; `readback(i)` may throw. */
-function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_000_000n, allowance = 1_000_000n } = {}) {
+function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_000_000n, allowance = 1_000_000n, status = () => "CONFIRMED", receipt = () => "success" } = {}) {
   const requests = [];
   const mined = new Map();
   let n = 0;
@@ -283,12 +284,12 @@ function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_0
     const hash = `0x${String(i + 1).padStart(2, "0").repeat(32)}`;
     const t = rewrite(request.transaction, i);
     mined.set(hash, { i, tx: { from: account.address, to: t.to, input: t.data, value: t.value, gas: t.gas, maxFeePerGas: t.maxFeePerGas, maxPriorityFeePerGas: t.maxPriorityFeePerGas, chainId: request.chainId } });
-    return { kind: "transaction", status: "CONFIRMED", hash };
+    return { kind: "transaction", status: status(i), hash };
   };
   const publicClient = (chainId) => ({
     getChainId: async () => chainId,
     estimateFeesPerGas: async () => ({ maxFeePerGas: 7_000_000n, maxPriorityFeePerGas: 1_000_000n }),
-    waitForTransactionReceipt: async () => ({ status: "success" }),
+    waitForTransactionReceipt: async ({ hash }) => ({ status: receipt(mined.get(hash).i) }),
     getTransaction: async ({ hash }) => { const m = mined.get(hash); readback(m.i); return m.tx; },
     readContract: async ({ functionName }) => (functionName === "balanceOf" ? balance : allowance),
   });
@@ -407,4 +408,31 @@ test("M-2 and B-2: agent texts name only declarable baselines and mm commands", 
   const out = await runCommand(spec("recta:move"), wallet().c, {}, { ...move, execute: false }, f);
   assert.doesNotMatch(out.preview.note, /recta_execute|recta_fee_funds|recta_approve_fee/);
   assert.match(out.preview.note, /mm recta move --execute/);
+});
+
+test("R-1: MetaMask stops tracking the transfer but gives its hash: it may have been sent, never 'did not send'", async () => {
+  for (const state of ["CONFIRMATION_TRACKING_EXPIRED", "BROADCAST_TRACKING_EXPIRED"]) {
+    const { shown } = await transferSent({ status: (i) => (i === 1 ? state : "CONFIRMED") });
+    assert.equal(shown.code, "RECTA_TRANSFER_SENT", state);
+    const body = JSON.parse(shown.message);
+    assert.equal(body.check, "wallet_unconfirmed");
+    assert.equal(body.origin_tx_hash, `0x${"02".repeat(32)}`);
+    assert.equal(body.unconfirmed_tx_hash, `0x${"02".repeat(32)}`);
+    assert.match(shown.hint, /may have been sent/);
+    assert.match(shown.hint, /mm recta report --result-id r_test/);
+    assert.doesNotMatch(shown.message, /did not send/);
+  }
+  // Without a hash, MetaMask did not send it.
+  const signer = metaMaskSigner({ address: account.address, execute: async () => ({ kind: "transaction", status: "BROADCAST_FAILED" }), publicClientFor: publicClients() });
+  await assert.rejects(signer.sendTransaction(tx), /MetaMask did not send/);
+});
+
+test("R-2: a transfer that reverted on chain moved nothing: the agent is told its own route is free", async () => {
+  const { shown } = await transferSent({ receipt: (i) => (i === 1 ? "reverted" : "success") });
+  assert.equal(shown.code, "RECTA_TRANSFER_REVERTED");
+  const body = JSON.parse(shown.message);
+  assert.equal(body.transfer_sent, false);
+  assert.equal(body.reverted_tx_hash, `0x${"02".repeat(32)}`);
+  assert.match(shown.hint, /nothing moved/);
+  assert.doesNotMatch(shown.hint, /do not send/);
 });

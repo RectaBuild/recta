@@ -284,6 +284,18 @@ export async function runCommand(spec: CommandSpec, ctx: MmContextLike, io: unkn
     const body = bodyOf(e);
     const approvals = sent.filter((t) => t.approval).map((t) => t.hash);
     const transfer = sent.find((t) => !t.approval)?.hash;
+    const last = sent[sent.length - 1]!;
+    // Fable R-2 on #19: the last transaction was mined and reverted (the client's transaction_failed): nothing moved.
+    if (body["check"] === "transaction_failed" && !last.approval) {
+      throw new RectaToolError({
+        ...body,
+        sent_tx_hashes: sent.map((t) => t.hash),
+        reverted_tx_hash: last.hash,
+        transfer_sent: false,
+        next: `The transfer ${last.hash} reverted on chain: nothing moved. You may move the funds by Recta again or by your own route.`,
+      });
+    }
+    const uncertain = body["check"] === "wallet_unconfirmed";
     const resultId = typeof body["result_id"] === "string" ? body["result_id"] : undefined;
     const report = transfer !== undefined && resultId !== undefined
       ? ` Report it once it is mined: mm recta report --result-id ${resultId} --origin-tx-hash ${transfer}${approvals.length > 0 && spec.id === "recta:move" ? ` --approval-tx-hash ${approvals[0]}` : ""}`
@@ -293,9 +305,10 @@ export async function runCommand(spec: CommandSpec, ctx: MmContextLike, io: unkn
       sent_tx_hashes: sent.map((t) => t.hash),
       ...(transfer === undefined ? {} : { origin_tx_hash: transfer, transfer_sent: true }),
       ...(approvals.length === 0 ? {} : { approval_tx_hashes: approvals }),
+      ...(uncertain ? { unconfirmed_tx_hash: last.hash } : {}),
       next: transfer !== undefined
-        ? `The transfer was sent (${transfer}): do not send it again, by Recta or by your own route.${report}`
-        : `An approval was sent (${approvals.join(", ")}) but no transfer: do not send the approval again.`,
+        ? `The transfer ${uncertain && !last.approval ? "may have been sent" : "was sent"} (${transfer}): look it up on chain, and do not send it again, by Recta or by your own route, while it may still be mined.${report}`
+        : `An approval was ${uncertain ? "possibly " : ""}sent (${approvals.join(", ")}) but no transfer: do not send the approval again.`,
     });
   }
   return JSON.parse(JSON.stringify(out, (_, x) => (typeof x === "bigint" ? x.toString() : x))) as Record<string, unknown>;
@@ -316,7 +329,8 @@ const HINT = "Recta's guide for agents: https://api.recta.build/llms.txt";
 export function commandErrorOf(sdk: MmPluginSdk, e: unknown): Error {
   if (e instanceof RectaToolError) {
     if (e.body["transfer_sent"] === true || Array.isArray(e.body["sent_tx_hashes"])) {
-      return new sdk.CommandError(e.body["transfer_sent"] === true ? "RECTA_TRANSFER_SENT" : "RECTA_APPROVAL_SENT", e.message, String(e.body["next"]));
+      const code = typeof e.body["reverted_tx_hash"] === "string" ? "RECTA_TRANSFER_REVERTED" : e.body["transfer_sent"] === true ? "RECTA_TRANSFER_SENT" : "RECTA_APPROVAL_SENT";
+      return new sdk.CommandError(code, e.message, String(e.body["next"]));
     }
     const kind = typeof e.body["error"] === "string" ? (e.body["error"] as string) : "FAILED";
     const hint = kind === "DEBT" ? "Pay it with: mm recta pay-debt --debt-offer '<the debt_offer JSON above>'" : HINT;

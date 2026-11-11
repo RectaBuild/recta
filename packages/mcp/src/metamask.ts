@@ -91,10 +91,18 @@ export function metaMaskSigner(args: {
     sendTransaction: async (tx: RectaTransaction) => {
       const { chainId, to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas } = tx;
       const result = await execute({ kind: "transaction", chainId, transaction: { to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas } }, { waitForReceipt: true });
-      if (result.kind !== "transaction" || result.failureCode !== undefined || (result.status !== undefined && FAILED_STATES.has(result.status))) refused(result, "send Recta's transaction");
-      if (typeof result.hash !== "string" || !HEX32.test(result.hash)) throw new RectaCheckError("wallet_transaction", "MetaMask returned no transaction hash");
-      const hash = result.hash as Hex;
+      const failed = result.kind !== "transaction" || result.failureCode !== undefined || (result.status !== undefined && FAILED_STATES.has(result.status));
+      const withHash = result.kind === "transaction" && typeof result.hash === "string" && HEX32.test(result.hash);
+      if (failed && !withHash) refused(result, "send Recta's transaction");
+      if (!withHash) throw new RectaCheckError("wallet_transaction", "MetaMask returned no transaction hash");
+      const hash = (result as { hash: string }).hash as Hex;
       args.onSent?.({ hash, chainId, approval: data.slice(0, 10).toLowerCase() === APPROVE_SELECTOR });
+      // Fable R-1 on #19: a failure that carries a hash (MetaMask stopped tracking it, or reports a failure after
+      // broadcasting) may still be mined. Never say it was not sent.
+      if (failed) {
+        const state = result.failureCode ?? result.status ?? "unknown";
+        throw new RectaCheckError("wallet_unconfirmed", `MetaMask reports ${state} for ${hash}: it may have been sent, so look it up on chain before sending anything`);
+      }
       // Read back what was mined: Recta verifies the committed transaction field by field, so a changed one is worth
       // nothing and must stop the route here.
       const client = publicClientFor(chainId);
