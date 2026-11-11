@@ -31,9 +31,11 @@ Recta charges exactly 5 % of the saving it verifies on chain. If not, keep your 
    Every answer of `--execute` and `approve-fee` carries `execution_state`. Read it before doing anything else:
    - `RECTA_TRANSFER_SENT` (`SENT`): the transfer already left. Never send it again, by Recta or by your own route.
      Its hint carries the exact `mm recta report …` command.
-   - `RECTA_SEND_UNKNOWN` (`UNKNOWN`): a send was attempted and its outcome is not known. Send nothing more for this
-     transfer, by any route, until you have checked on chain whether the answer's `nonce` of `address` on `chain_id`
-     was used, and by which transaction. If it was used by the transfer, report it with `mm recta report`.
+   - `RECTA_SEND_UNKNOWN` (`UNKNOWN`): a send was attempted and its outcome is not known. A request waiting for
+     approval in MetaMask can still be sent later. Do not move these funds by any other route. Run
+     `mm recta recover --json`: it reads MetaMask's requests and the chain. Until it says the attempt is resolved,
+     Recta refuses every send from this wallet, even after a restart. If you found the transaction yourself, pass it
+     with `--tx-hash`. If the transfer left, report it with the `mm recta report` command that `recover` gives.
    - `RECTA_TRANSFER_REVERTED` (`REVERTED`): the transfer was mined and reverted; nothing moved.
    - `RECTA_APPROVAL_SENT` (`APPROVAL_ONLY`): only an approval left; no transfer was sent.
    - `RECTA_NOT_SENT` (`NOT_SENT`): nothing was sent from your wallet.

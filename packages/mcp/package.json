@@ -209,6 +209,16 @@
         "targetChains": [
           8453
         ]
+      },
+      {
+        "id": "recta:recover",
+        "capabilities": [
+          "wallet-read"
+        ],
+        "dataAccess": [
+          "accounts"
+        ],
+        "targetChains": "any"
       }
     ]
   }

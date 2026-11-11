@@ -71,9 +71,16 @@ export interface MetaMaskSentTransaction {
    */
   readonly state: "UNKNOWN" | "SENT" | "NOT_SENT";
   readonly hash?: Hex;
+  /** SENT only: what the chain says once the receipt was read (PENDING while it was not). */
+  readonly chainStatus?: "PENDING" | "CONFIRMED" | "REVERTED";
   readonly chainId: number;
   readonly from: Hex;
   readonly to: Hex;
+  readonly data: Hex;
+  readonly value: bigint;
+  readonly gas: bigint;
+  readonly maxFeePerGas: bigint;
+  readonly maxPriorityFeePerGas: bigint;
   /** The wallet's pending nonce, read just before the send: the transaction, if it exists, uses it. */
   readonly nonce: number;
   /** An ERC-20 `approve` (Recta's approval transaction, or the fee approval), not the transfer itself. */
@@ -84,7 +91,10 @@ export function metaMaskSigner(args: {
   readonly address: Hex;
   readonly execute: MetaMaskWalletExecutor;
   readonly publicClientFor: MetaMaskPublicClientFor;
-  /** Called before every send (UNKNOWN), then with its outcome (SENT with the hash, or NOT_SENT): from the first call on, money may have moved. */
+  /**
+   * Called before every send (UNKNOWN), then with its outcome (SENT with the hash, NOT_SENT, or UNKNOWN again with a
+   * hash). The first call must persist the attempt: if it throws, nothing is sent.
+   */
   readonly onSent?: (sent: MetaMaskSentTransaction) => void;
 }): RectaSigner {
   const { address, execute, publicClientFor } = args;
@@ -119,14 +129,15 @@ export function metaMaskSigner(args: {
       } catch (e) {
         throw new RectaCheckError("wallet_nonce", `could not read the nonce of ${address} on chain ${chainId} before sending (${safeErrorText(e).slice(0, 200)}): nothing was sent`);
       }
-      const attempt = { attempt: ++attempts, chainId, from: address, to, nonce, approval };
-      // Owner 2026-11-11 21:16: from here on a send may have happened, so it is UNKNOWN until proven otherwise.
+      const attempt = { attempt: ++attempts, chainId, from: address, to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas, nonce, approval };
+      // Owner 2026-11-11 21:16/21:22: recorded (on disk, by the caller) before MetaMask is asked; from here on a send
+      // may have happened, so it is UNKNOWN until evidence says otherwise.
       args.onSent?.({ ...attempt, state: "UNKNOWN" });
       let result: MetaMaskWalletResult;
       try {
         result = await execute({ kind: "transaction", chainId, transaction: { to, data, value, gas, maxFeePerGas, maxPriorityFeePerGas } }, { waitForReceipt: true });
       } catch (e) {
-        throw new RectaCheckError("wallet_send_unknown", `MetaMask's send failed without an answer (${safeErrorText(e).slice(0, 200)}): it may have been broadcast with nonce ${nonce}`);
+        throw new RectaCheckError("wallet_send_unknown", `MetaMask's send failed without an answer (${safeErrorText(e).slice(0, 200)}): it may have been broadcast, now or later`);
       }
       const failed = result.kind !== "transaction" || result.failureCode !== undefined || (result.status !== undefined && FAILED_STATES.has(result.status));
       const withHash = result.kind === "transaction" && typeof result.hash === "string" && HEX32.test(result.hash);
@@ -135,23 +146,32 @@ export function metaMaskSigner(args: {
           args.onSent?.({ ...attempt, state: "NOT_SENT" });
           refused(result, "send Recta's transaction");
         }
-        throw new RectaCheckError("wallet_send_unknown", `MetaMask answered ${result.failureCode ?? result.status ?? "without a status"} and no transaction hash: it may have been broadcast with nonce ${nonce}`);
+        throw new RectaCheckError("wallet_send_unknown", `MetaMask answered ${result.failureCode ?? result.status ?? "without a status"} and no transaction hash: it may have been broadcast, now or later`);
       }
       const hash = (result as { hash: string }).hash as Hex;
-      args.onSent?.({ ...attempt, state: "SENT", hash });
       // Fable R-1 on #19: a failure that carries a hash (MetaMask stopped tracking it, or reports a failure after
       // broadcasting) may still be mined. Never say it was not sent.
       if (failed) {
+        args.onSent?.({ ...attempt, state: "UNKNOWN", hash });
         const state = result.failureCode ?? result.status ?? "unknown";
         throw new RectaCheckError("wallet_unconfirmed", `MetaMask reports ${state} for ${hash}: it may have been sent, so look it up on chain before sending anything`);
       }
       // Read back what was mined: Recta verifies the committed transaction field by field, so a changed one is worth
       // nothing and must stop the route here.
+      args.onSent?.({ ...attempt, state: "SENT", hash, chainStatus: "PENDING" });
       let sent: Awaited<ReturnType<PublicClient["getTransaction"]>>;
       try {
-        await client.waitForTransactionReceipt({ hash });
+        const receipt = await client.waitForTransactionReceipt({ hash });
         sent = await client.getTransaction({ hash });
+        // Fable P-3: a hash whose mined sender is not this wallet is not this wallet's transaction (a smart account's
+        // bundle, or something else): its outcome is UNKNOWN.
+        if (sent.from.toLowerCase() !== address.toLowerCase()) {
+          args.onSent?.({ ...attempt, state: "UNKNOWN", hash });
+          throw new RectaCheckError("wallet_foreign_sender", `MetaMask's hash ${hash} was mined from ${sent.from}, not from ${address}: whether this wallet's transaction was sent is not known`);
+        }
+        args.onSent?.({ ...attempt, state: "SENT", hash, chainStatus: receipt.status === "success" ? "CONFIRMED" : "REVERTED" });
       } catch (e) {
+        if (e instanceof RectaCheckError) throw e;
         throw new RectaCheckError("wallet_readback", `MetaMask sent ${hash}, but reading it back failed (${safeErrorText(e).slice(0, 200)}): it may still be mined, so do not send it again`);
       }
       const changed = [
@@ -180,6 +200,8 @@ export interface MetaMaskWalletStateLike {
   readonly byokWallets?: readonly { readonly id?: string; readonly name?: string | null; readonly address?: string; readonly namespace?: string }[];
   readonly remoteWallets?: readonly { readonly name?: string | null; readonly address?: string; readonly namespace?: string }[];
   readonly selectedWallet?: { readonly mode?: string; readonly namespace?: string; readonly ref?: { readonly id?: string; readonly address?: string; readonly name?: string } };
+  /** MetaMask's own record of its wallet requests (what `mm wallet requests list` shows). */
+  readonly pendingJobs?: readonly { readonly pollingId?: string; readonly kind?: string; readonly status?: string; readonly txHash?: string; readonly chainId?: number; readonly submittedAt?: string }[];
 }
 
 /** The EVM address of the wallet selected in `mm` (`mm wallet use`), or a clear error naming `--address`. */

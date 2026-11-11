@@ -1,6 +1,9 @@
 // The MetaMask Agent Wallet (`mm`) plugin: the signer on MetaMask's wallet executor and the `mm recta …` commands, with
 // stand-ins shaped like @metamask/agent-wallet 7.3.0 and @metamask/agent-sdk 7.3.0 (checked against their published
 // declarations when this was written). Run after the build: node --test test/
+import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -273,9 +276,11 @@ function collectingRecta({ reportStatus = 200 } = {}) {
 }
 
 /** MetaMask with distinct hashes per transaction; `rewrite(tx, i)` changes what is mined; `readback(i)` may throw. */
-function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_000_000n, allowance = 1_000_000n, status = () => "CONFIRMED", receipt = () => "success", answer = () => undefined, sign = () => undefined, nonce = () => undefined } = {}) {
+function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_000_000n, allowance = 1_000_000n, status = () => "CONFIRMED", receipt = () => "success", answer = () => undefined, sign = () => undefined, nonce = () => undefined, journalDir = mkdtempSync(join(tmpdir(), "recta-journal-")), confirmed = undefined } = {}) {
   const requests = [];
   const mined = new Map();
+  /** MetaMask's pendingJobs (`mm wallet requests list`), as a test sets them. */
+  const jobs = [];
   let n = 0;
   const run = async (request, opts) => {
     requests.push({ request, opts });
@@ -288,20 +293,22 @@ function wallet({ rewrite = (t) => t, readback = () => undefined, balance = 20_0
     if (instead !== undefined) return instead;
     const hash = `0x${String(i + 1).padStart(2, "0").repeat(32)}`;
     const t = rewrite(request.transaction, i);
-    mined.set(hash, { i, tx: { from: account.address, to: t.to, input: t.data, value: t.value, gas: t.gas, maxFeePerGas: t.maxFeePerGas, maxPriorityFeePerGas: t.maxPriorityFeePerGas, chainId: request.chainId } });
+    mined.set(hash, { i, tx: { from: account.address, to: t.to, input: t.data, value: t.value, gas: t.gas, maxFeePerGas: t.maxFeePerGas, maxPriorityFeePerGas: t.maxPriorityFeePerGas, chainId: request.chainId, nonce: 7 + i, blockNumber: 100n + BigInt(i) } });
     return { kind: "transaction", status: status(i), hash };
   };
   const publicClient = (chainId) => ({
     getChainId: async () => chainId,
     // The pending nonce: 7 plus every send asked of MetaMask so far.
-    getTransactionCount: async () => { nonce(n); return 7 + n; },
+    // `latest` (recover): the confirmed nonce, 7 plus every mined transaction unless the test says otherwise.
+    getTransactionCount: async ({ blockTag }) => { if (blockTag === "latest") return confirmed ?? 7 + [...mined.values()].filter((m) => m.tx.blockNumber !== null).length; nonce(n); return 7 + n; },
     estimateFeesPerGas: async () => ({ maxFeePerGas: 7_000_000n, maxPriorityFeePerGas: 1_000_000n }),
     waitForTransactionReceipt: async ({ hash }) => ({ status: receipt(mined.get(hash).i) }),
-    getTransaction: async ({ hash }) => { const m = mined.get(hash); readback(m.i); return m.tx; },
+    getTransaction: async ({ hash }) => { const m = mined.get(hash); if (m === undefined) throw new Error("TransactionNotFoundError"); readback(m.i); return m.tx; },
+    getTransactionReceipt: async ({ hash }) => { const m = mined.get(hash); if (m === undefined || m.tx.blockNumber === null) throw new Error("TransactionReceiptNotFoundError"); return { status: receipt(m.i) }; },
     readContract: async ({ functionName }) => (functionName === "balanceOf" ? balance : allowance),
   });
-  const c = { walletStateManager: { read: () => ({ byokWallets: [{ id: "w1", address: account.address, namespace: "eip155" }], selectedWallet: { mode: "byok", namespace: "eip155", ref: { id: "w1" } } }) }, publicClient, walletExecutor: async () => run };
-  return { c, requests, mined };
+  const c = { walletStateManager: { read: () => ({ byokWallets: [{ id: "w1", address: account.address, namespace: "eip155" }], selectedWallet: { mode: "byok", namespace: "eip155", ref: { id: "w1" } }, pendingJobs: jobs }) }, publicClient, walletExecutor: async () => run, journalDir };
+  return { c, requests, mined, jobs, journalDir };
 }
 
 const move = { "source-network": "base", "source-asset": "USDC", "destination-network": "arbitrum", amount: "10", "baseline-provider": "across", execute: true };
@@ -371,7 +378,7 @@ test("M-1: MetaMask changes the approval: only the approval was sent, the transf
   const { shown, w } = await transferSent({ rewrite: (t, i) => (i === 0 ? { ...t, maxFeePerGas: 1n } : t) });
   assert.equal(shown.code, "RECTA_APPROVAL_SENT");
   assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 1);
-  assert.equal(JSON.parse(shown.message).transfer_sent, false);
+  assert.equal(JSON.parse(shown.message).transfer_sent, "NO");
   assert.equal(JSON.parse(shown.message).execution_state, "APPROVAL_ONLY");
   assert.match(shown.hint, /no transfer/);
 });
@@ -433,7 +440,7 @@ test("R-1: MetaMask stops tracking the transfer but gives its hash: UNKNOWN, nev
     assert.equal(body.transfer_sent, "UNKNOWN");
     assert.equal(body.unconfirmed_tx_hash, `0x${"02".repeat(32)}`);
     assert.equal(body.nonce, 8);
-    assert.match(shown.hint, /Send nothing more for this transfer/);
+    assert.match(shown.hint, /Recta will send nothing more from this wallet until this is resolved.*mm recta recover/);
     assert.match(shown.hint, new RegExp(`mm recta report --result-id r_test --origin-tx-hash 0x${"02".repeat(32)}`));
     assert.doesNotMatch(shown.message, /did not send/);
   }
@@ -452,7 +459,7 @@ const unknownTransfer = (shown) => {
   assert.equal(body.nonce, 8, "the nonce read before the transfer (the approval used 7)");
   assert.equal(body.unconfirmed_tx_hash, undefined);
   assert.deepEqual(body.approval_tx_hashes, [`0x${"01".repeat(32)}`]);
-  assert.match(shown.hint, /Send nothing more for this transfer, by Recta or by any other route, until you have checked on chain whether nonce 8 of 0x/);
+  assert.match(shown.hint, /nonce 8 when it was asked; no hash is known\), now or later.*Recta will send nothing more from this wallet until this is resolved.*Run mm recta recover/);
   assert.match(shown.hint, /mm recta report --result-id r_test --origin-tx-hash <its hash>/);
   assert.doesNotMatch(shown.message + shown.hint, /did not send|no transfer/);
   return body;
@@ -478,7 +485,7 @@ test("U-1: only DENIED or EXPIRED without a hash prove the transfer was not sign
     assert.equal(shown.code, "RECTA_APPROVAL_SENT", status);
     const body = JSON.parse(shown.message);
     assert.equal(body.execution_state, "APPROVAL_ONLY");
-    assert.equal(body.transfer_sent, false);
+    assert.equal(body.transfer_sent, "NO");
     assert.match(body.message, /MetaMask did not send/);
     assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 2, "nothing is retried");
   }
@@ -489,11 +496,11 @@ test("U-1 (Y2): the call that sends the route's approval dies: UNKNOWN for the a
   assert.equal(shown.code, "RECTA_SEND_UNKNOWN");
   const body = JSON.parse(shown.message);
   assert.equal(body.execution_state, "UNKNOWN");
-  assert.equal(body.transfer_sent, false);
+  assert.equal(body.transfer_sent, "NO");
   assert.equal(body.nonce, 7);
   assert.equal(body.to.toLowerCase(), pins.USDC_BASE.toLowerCase());
   assert.match(shown.hint, /may have broadcast an approval/);
-  assert.match(shown.hint, /Send nothing more for this transfer/);
+  assert.match(shown.hint, /Recta will send nothing more from this wallet until this is resolved.*mm recta recover/);
   assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 1);
 });
 
@@ -529,7 +536,7 @@ test("U-2 (Y3): approve-fee: the send dies, fails without a hash, or fails with 
     assert.equal(body.nonce, 7);
     assert.equal(body.to.toLowerCase(), pins.USDC_BASE.toLowerCase());
     assert.match(shown.hint, /may have broadcast an approval/);
-    assert.match(shown.hint, /do not send the approval again/);
+    assert.match(shown.hint, /do not send the approval again/i);
   }
 });
 
@@ -567,17 +574,201 @@ test("U-1: a successful move --execute says SENT; a run that stops before sendin
   const e = await runCommand(spec("recta:move"), wallet().c, {}, { ...move, amount: "1" }, f).catch((x) => x);
   const shown = commandErrorOf(sdkErr, e);
   assert.equal(shown.code, "RECTA_NOT_SENT");
-  assert.equal(JSON.parse(shown.message).transfer_sent, false);
+  assert.equal(JSON.parse(shown.message).transfer_sent, "NO");
 });
 
 test("R-2: a transfer that reverted on chain moved nothing: the agent is told its own route is free", async () => {
   const { shown } = await transferSent({ receipt: (i) => (i === 1 ? "reverted" : "success") });
   assert.equal(shown.code, "RECTA_TRANSFER_REVERTED");
   const body = JSON.parse(shown.message);
-  assert.equal(body.transfer_sent, false);
+  assert.equal(body.transfer_sent, "NO");
   assert.equal(body.reverted_tx_hash, `0x${"02".repeat(32)}`);
-  assert.match(shown.hint, /nothing moved/);
+  assert.match(shown.hint, /moved nothing/);
   assert.match(shown.hint, new RegExp(`approval 0x${"01".repeat(32)} to the route's contract was mined and still stands`));
   assert.equal(body.execution_state, "REVERTED");
   assert.doesNotMatch(shown.hint, /do not send/i);
+});
+
+// ---- Owner 2026-11-11 21:22, Fable P-1/P-2/P-3 on e2636b9: the journal, the block, and recover. ----
+
+const TRANSFER_HASH = `0x${"7e".repeat(32)}`;
+const transferOnChain = (overrides = {}) => {
+  const t = artifact().transactions[1];
+  return { from: account.address, to: t.to, input: t.data, value: 0n, gas: BigInt(t.gas_limit), maxFeePerGas: 14_000_000n, maxPriorityFeePerGas: 1_000_000n, chainId: 8453, nonce: 8, blockNumber: 120n, ...overrides };
+};
+const journalOf = (w) => JSON.parse(readFileSync(join(w.journalDir, `${account.address.toLowerCase()}.json`), "utf8")).attempts;
+const dies = { answer: (i) => { if (i === 1) throw new Error("timeout waiting for MFA"); } };
+const recoverRun = async (w, flags = {}) => runCommand(spec("recta:recover"), w.c, {}, flags, collectingRecta().f);
+
+test("P-1: the attempt is on disk (fsynced, 0600) before MetaMask is asked; a process killed mid-send leaves it UNKNOWN and the rerun is refused", async () => {
+  let onDisk;
+  let asked;
+  const reached = new Promise((r) => { asked = r; });
+  const w = wallet({ answer: (i) => {
+    if (i !== 1) return undefined;
+    onDisk = journalOf(w);
+    asked();
+    return new Promise(() => {}); // the process dies here: MetaMask never answers
+  } });
+  void runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch(() => {});
+  await reached;
+  const transfer = onDisk.find((a) => !a.approval);
+  assert.equal(transfer.state, "UNKNOWN");
+  assert.equal(transfer.result_id, "r_test");
+  assert.equal(transfer.nonce, 8);
+  assert.equal(transfer.to, artifact().transactions[1].to.toLowerCase());
+  assert.deepEqual(transfer.economic, { source_network: "base", source_asset: "USDC", destination_network: "arbitrum", amount: "10" });
+  assert.equal(statSync(join(w.journalDir, `${account.address.toLowerCase()}.json`)).mode & 0o777, 0o600);
+  // The dead process's lock is left behind with a pid that no longer runs.
+  writeFileSync(join(w.journalDir, `${account.address.toLowerCase()}.lock`), "2147483646");
+  const again = wallet({ journalDir: w.journalDir });
+  const { f, seen } = collectingRecta();
+  const shown = commandErrorOf(sdkErr, await runCommand(spec("recta:move"), again.c, {}, move, f).catch((x) => x));
+  assert.equal(shown.code, "RECTA_SEND_UNKNOWN");
+  const body = JSON.parse(shown.message);
+  assert.equal(body.error, "UNRESOLVED_SEND");
+  assert.equal(body.this_run, "NOT_SENT");
+  assert.equal(body.unresolved_attempts[0].result_id, "r_test");
+  assert.match(shown.hint, /mm recta recover/);
+  assert.equal(again.requests.length, 0, "nothing is signed or sent");
+  assert.equal(seen.length, 0, "Recta is not even asked to evaluate");
+});
+
+test("P-2: MetaMask's MFA times out on the transfer: the identical rerun, and approve-fee, are refused until recover resolves it", async () => {
+  const w = wallet(dies);
+  const first = commandErrorOf(sdkErr, await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch((x) => x));
+  assert.equal(first.code, "RECTA_SEND_UNKNOWN");
+  assert.doesNotMatch(first.hint, /nothing from this attempt was broadcast|still unused/);
+  const before = w.requests.length;
+  for (const [id, flags] of [["recta:move", move], ["recta:approve-fee", { "amount-usdc": "0.5" }]]) {
+    const shown = commandErrorOf(sdkErr, await runCommand(spec(id), w.c, {}, flags, collectingRecta().f).catch((x) => x));
+    assert.equal(shown.code, "RECTA_SEND_UNKNOWN", id);
+  }
+  assert.equal(w.requests.length, before, "no request reaches MetaMask");
+  // Free and read-only commands still work.
+  assert.equal((await runCommand(spec("recta:move"), w.c, {}, { ...move, execute: false }, collectingRecta().f)).execution_state, undefined);
+});
+
+test("P-3: the MFA request is approved late: recover finds MetaMask's job and its transaction, says SENT CONFIRMED and how to report, and unblocks", async () => {
+  const w = wallet(dies);
+  await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch(() => {});
+  w.jobs.push({ pollingId: "job-late", kind: "transaction", status: "CONFIRMED", txHash: TRANSFER_HASH, chainId: 8453, submittedAt: new Date().toISOString() });
+  w.mined.set(TRANSFER_HASH, { i: 50, tx: transferOnChain() });
+  const out = await recoverRun(w);
+  assert.equal(out.blocked, false);
+  const [a] = out.attempts;
+  assert.equal(a.state, "SENT");
+  assert.equal(a.chain_status, "CONFIRMED");
+  assert.equal(a.tx_hash, TRANSFER_HASH);
+  assert.equal(a.mm_request, "job-late");
+  assert.match(out.next, new RegExp(`never send it again.*mm recta report --result-id r_test --origin-tx-hash ${TRANSFER_HASH} --approval-tx-hash 0x${"01".repeat(32)}`));
+  assert.equal((await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f)).execution_state, "SENT", "a new move runs once resolved");
+});
+
+test("P-3: recover never reads absence as 'not sent': open, failed or missing evidence stays UNKNOWN and blocked", async () => {
+  const cases = [
+    ["an MFA request still open", (w) => w.jobs.push({ pollingId: "j", kind: "transaction", status: "AWAITING_MFA", chainId: 8453, submittedAt: new Date().toISOString() }), /still open/],
+    ["a request that FAILED without a hash", (w) => w.jobs.push({ pollingId: "j", kind: "transaction", status: "FAILED", chainId: 8453, submittedAt: new Date().toISOString() }), /ended FAILED without a hash/],
+    ["no request and the nonce unused", () => {}, /nonce 8 of this wallet is not used yet.*does not prove/],
+    ["a hash MetaMask gave that the chain does not know yet", (w) => w.jobs.push({ pollingId: "j", kind: "transaction", status: "BROADCASTED", txHash: TRANSFER_HASH, chainId: 8453, submittedAt: new Date().toISOString() }), /not on chain 8453 yet \(that is not proof/],
+    ["the nonce used, by a transaction not found", (w) => { w.mined.set(`0x${"99".repeat(32)}`, { i: 60, tx: transferOnChain({ nonce: 3 }) }); }, /nonce 8 of this wallet has been used .*pass it with --tx-hash/],
+  ];
+  for (const [what, arrange, evidence] of cases) {
+    const w = wallet({ ...dies, ...(what.startsWith("the nonce used") ? { confirmed: 9 } : {}) });
+    await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch(() => {});
+    arrange(w);
+    const out = await recoverRun(w);
+    assert.equal(out.blocked, true, what);
+    assert.equal(out.attempts[0].state, "UNKNOWN", what);
+    assert.match(out.attempts[0].evidence, evidence, what);
+    assert.equal(commandErrorOf(sdkErr, await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch((x) => x)).code, "RECTA_SEND_UNKNOWN", what);
+  }
+});
+
+test("P-3: recover resolves only on evidence: DENIED request → NOT_SENT; nonce taken by another identified mined tx → NOT_SENT; pending → SENT PENDING (blocked); reverted → REVERTED", async () => {
+  const run = async (arrange, flags = {}) => {
+    const w = wallet(dies);
+    await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch(() => {});
+    arrange(w);
+    return { out: await recoverRun(w, flags), w };
+  };
+  const denied = await run((w) => w.jobs.push({ pollingId: "j", kind: "transaction", status: "DENIED", chainId: 8453, submittedAt: new Date().toISOString() }));
+  assert.equal(denied.out.attempts[0].state, "NOT_SENT");
+  assert.equal(denied.out.blocked, false);
+  const other = `0x${"aa".repeat(32)}`;
+  const taken = await run((w) => w.mined.set(other, { i: 70, tx: { ...transferOnChain(), to: account.address, input: "0x", nonce: 8 } }), { "tx-hash": other });
+  assert.equal(taken.out.attempts[0].state, "NOT_SENT");
+  assert.match(taken.out.attempts[0].evidence, /nonce 8 .* taken by another mined transaction/);
+  const pending = await run((w) => w.mined.set(TRANSFER_HASH, { i: 71, tx: transferOnChain({ blockNumber: null }) }), { "tx-hash": TRANSFER_HASH });
+  assert.equal(pending.out.attempts[0].state, "SENT");
+  assert.equal(pending.out.attempts[0].chain_status, "PENDING");
+  assert.equal(pending.out.blocked, true, "a transfer not yet mined still blocks");
+  const reverted = await run((w) => w.mined.set(TRANSFER_HASH, { i: 72, tx: transferOnChain() }), { "tx-hash": TRANSFER_HASH });
+  // wallet() reports receipt "success" by default; a reverted one:
+  const rw = wallet({ ...dies, receipt: (i) => (i === 73 ? "reverted" : "success") });
+  await runCommand(spec("recta:move"), rw.c, {}, move, collectingRecta().f).catch(() => {});
+  rw.mined.set(TRANSFER_HASH, { i: 73, tx: transferOnChain() });
+  const r = await recoverRun(rw, { "tx-hash": TRANSFER_HASH });
+  assert.equal(r.attempts[0].state, "REVERTED");
+  assert.equal(r.blocked, false);
+  assert.equal(reverted.out.attempts[0].chain_status, "CONFIRMED");
+});
+
+test("P-3: recover checks a given hash, never trusts it: another sender, or another tx with an open MetaMask request, stays UNKNOWN", async () => {
+  const w = wallet(dies);
+  await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch(() => {});
+  w.mined.set(TRANSFER_HASH, { i: 80, tx: transferOnChain({ from: other.address }) });
+  let out = await recoverRun(w, { "tx-hash": TRANSFER_HASH });
+  assert.equal(out.attempts[0].state, "UNKNOWN");
+  assert.match(out.attempts[0].evidence, /sent from 0x.*not from this wallet/);
+  const x = `0x${"bb".repeat(32)}`;
+  w.mined.set(x, { i: 81, tx: { ...transferOnChain(), to: account.address, input: "0x", nonce: 8 } });
+  w.jobs.push({ pollingId: "j", kind: "transaction", status: "AWAITING_MFA", chainId: 8453, submittedAt: new Date().toISOString() });
+  out = await recoverRun(w, { "tx-hash": x });
+  assert.equal(out.attempts[0].state, "UNKNOWN", "MetaMask may still send it with another nonce");
+  await assert.rejects(recoverRun(w, { "tx-hash": "0x12" }), /--tx-hash must be/);
+});
+
+test("P-1: a journal that cannot be written or read sends nothing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "recta-journal-"));
+  const asFile = join(dir, "file");
+  writeFileSync(asFile, "x");
+  for (const journalDir of [asFile, dir]) {
+    if (journalDir === dir) mkdirSync(join(dir, `${account.address.toLowerCase()}.json`)); // unreadable: a directory
+    const w = wallet({ journalDir });
+    const shown = commandErrorOf(sdkErr, await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch((x) => x));
+    assert.equal(shown.code, "RECTA_NOT_SENT", journalDir);
+    assert.equal(JSON.parse(shown.message).check, "journal");
+    assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 0);
+  }
+  // A corrupt journal is never read as empty.
+  const bad = mkdtempSync(join(tmpdir(), "recta-journal-"));
+  writeFileSync(join(bad, `${account.address.toLowerCase()}.json`), "{");
+  const w = wallet({ journalDir: bad });
+  assert.equal(commandErrorOf(sdkErr, await runCommand(spec("recta:approve-fee"), w.c, {}, { "amount-usdc": "0.5" }, collectingRecta().f).catch((x) => x)).code, "RECTA_NOT_SENT");
+  assert.equal(w.requests.filter((r) => r.request.kind === "transaction").length, 0);
+});
+
+test("P-2: a live mm recta process sending from the same wallet blocks a second one", async () => {
+  const w = wallet();
+  writeFileSync(join(w.journalDir, `${account.address.toLowerCase()}.lock`), String(process.ppid));
+  const shown = commandErrorOf(sdkErr, await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch((x) => x));
+  assert.equal(shown.code, "RECTA_NOT_SENT");
+  assert.equal(JSON.parse(shown.message).check, "wallet_busy");
+  assert.equal(w.requests.length, 0);
+});
+
+test("a mined transaction from another sender (a smart account's bundle) is UNKNOWN, not SENT", async () => {
+  const w = wallet({ rewrite: (t, i) => t });
+  const executor = await w.c.walletExecutor();
+  // MetaMask's transfer hash turns out to be mined from another address.
+  w.c.walletExecutor = async () => async (req, opts) => {
+    const out = await executor(req, opts);
+    if (req.kind === "transaction" && w.mined.size === 2) w.mined.get(out.hash).tx.from = other.address;
+    return out;
+  };
+  const shown = commandErrorOf(sdkErr, await runCommand(spec("recta:move"), w.c, {}, move, collectingRecta().f).catch((x) => x));
+  assert.equal(shown.code, "RECTA_SEND_UNKNOWN");
+  assert.equal(JSON.parse(shown.message).check, "wallet_foreign_sender");
+  assert.equal(journalOf(w).find((x) => !x.approval).state, "UNKNOWN");
 });
