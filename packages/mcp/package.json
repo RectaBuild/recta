@@ -45,6 +45,10 @@
     "./goat": {
       "types": "./dist/goat.d.ts",
       "import": "./dist/goat.js"
+    },
+    "./elizaos": {
+      "types": "./dist/elizaos.d.ts",
+      "import": "./dist/elizaos.js"
     }
   },
   "files": [
