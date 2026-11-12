@@ -135,6 +135,79 @@ const tools = await getOnChainTools({
 The plugin never sends a transaction: a GOAT `sendTransaction` takes no gas limit or fee caps, and Recta's route is
 committed to exact ones. Preview the route there and send it with `@recta/client` or this server.
 
+## MetaMask Agent Wallet (`mm`)
+
+This package is also a plugin for MetaMask's agent wallet CLI (`mm`, `@metamask/agent-wallet` 7.3 or later). The
+agent's MetaMask wallet signs Recta's requests and fee permits and sends Recta's transactions itself, through
+MetaMask's own policy (and its two-factor approval, if you turned it on). No private key is set anywhere.
+
+```sh
+mm config set experimentalPlugins true   # mm's plugin system is in beta and off by default
+mm plugins install @recta/mcp            # shows each command's permissions and asks you to accept them
+mm recta move --source-network base --source-asset USDC --destination-network arbitrum --amount 100 --baseline-provider stargate_v2 --json
+```
+
+| Command | Permissions | What it does |
+| --- | --- | --- |
+| `mm recta fit` | none | Free, signs nothing: does Recta cover the corridor? |
+| `mm recta trial` | wallet-read | Free, signs nothing: is there a cheaper provable route, and what would 5 % of the saving be? |
+| `mm recta move` | wallet-read, wallet-submit | Signs the evaluation (free). With no saving: keep your route. With a saving: shows the fee ceiling. Add `--execute` to sign the fee permit, send the route and report it. |
+| `mm recta report` | wallet-read, wallet-submit | Reports an executed route again (after `PENDING`). |
+| `mm recta ledger` | wallet-read, wallet-submit | Your Recta fees and whether each was collected. |
+| `mm recta fee-funds` | wallet-read | Free, signs nothing: your USDC on Base and its allowance to Permit2. |
+| `mm recta approve-fee` | wallet-read, wallet-submit | One bounded `USDC.approve(Permit2, amount)` on Base, never unlimited. |
+| `mm recta pay-debt` | wallet-read, wallet-submit | Signs the debt permit Recta offered after a fee it could not collect. |
+
+`move` runs in one go, because each `mm` command is a separate process: without `--execute` it stops after the
+preview; with `--execute` Recta evaluates again at the current chain state and then executes. Limits are flags with
+the same defaults as this server: `--max-fee-usdc` (1), `--max-native-wei` (0), `--min-output-bps` (9900),
+`--max-fee-gwei` (50), `--max-priority-fee-gwei` (2) and `--referrer`. The wallet is the one selected in `mm`, or
+`--address`.
+
+Every signature must recover to that address before Recta sees it. Every transaction is sent with Recta's exact gas
+limit and fee caps, and read back once mined: if MetaMask changed any committed field, nothing more is sent (Recta
+would not accrue that route). Errors keep this server's JSON answer, with codes such as `RECTA_CHECK_FAILED`,
+`RECTA_HTTP` and `RECTA_DEBT`. Every answer of a command that can send (`move --execute`, `approve-fee`) carries
+`execution_state`, and its errors carry a matching code:
+
+| Code | `execution_state` | Meaning |
+| --- | --- | --- |
+| `RECTA_NOT_SENT` | `NOT_SENT` | Nothing was sent: MetaMask answered `DENIED` or `EXPIRED`, or the command stopped before asking it. |
+| `RECTA_SEND_UNKNOWN` | `UNKNOWN` | A send was attempted and its outcome is not known (the call died, no hash, MetaMask stopped tracking it, or a request still waits for approval). The answer keeps `result_id`, `chain_id`, `address`, `to` and the `nonce` read before the send. Recta sends nothing more from this wallet until `mm recta recover` resolves it. |
+| `RECTA_TRANSFER_SENT` | `SENT` | The transfer left (`chain_status` `PENDING` or `CONFIRMED`): never send it again. The answer keeps `result_id`, `origin_tx_hash` and the approval hash, and its hint is the exact `mm recta report …` command. |
+| `RECTA_TRANSFER_REVERTED` | `REVERTED` | The transaction was mined and reverted: it moved nothing. An approval mined before it still stands. |
+| `RECTA_APPROVAL_SENT` | `APPROVAL_ONLY` | Only an approval left; no transfer was sent. |
+
+`transfer_sent` is `YES`, `NO` or `UNKNOWN`.
+
+Before MetaMask is asked to send anything, the attempt is written and fsynced to a journal on disk
+(`~/.recta/mm-journal/<wallet>.json`, mode 0600; `RECTA_MM_JOURNAL_DIR` moves it). If the journal cannot be written,
+nothing is sent. The journal is local to the machine that runs `mm`. Keep its directory on persistent storage (not a
+temporary container layer): it is what remembers a send whose outcome is not known.
+
+Every transaction is sent with the nonce read just before it, and with the attempt's tag in its intent
+(`Recta <attempt>: …`, kept in `mm wallet requests list`).
+
+While an attempt of a wallet is unresolved (`UNKNOWN`, or a transfer not yet mined), `move --execute` and
+`approve-fee` refuse with `RECTA_SEND_UNKNOWN`. This holds even after the process was killed.
+
+`mm recta recover` resolves attempts from MetaMask's own requests and the chain, never from the absence of a
+transaction:
+
+- `SENT` (`PENDING` or `CONFIRMED`), or `REVERTED`, when it finds this wallet's committed transaction. That is on the
+  bound nonce, or under the hash MetaMask gave for the tagged request.
+- `NOT_SENT` only when MetaMask's tagged request ended `DENIED` or `EXPIRED` unsigned. Or when another mined
+  transaction of this wallet took the bound nonce, MetaMask's state was read, and no request of MetaMask's can still
+  sign the attempt: its tagged request ended, or the wallet is BYOK, which signs at once.
+- `UNKNOWN` in every other case.
+
+`--tx-hash` gives it a hash you found; the hash is checked on chain, never trusted.
+
+ In code, `@recta/mcp/metamask` exports `metaMaskSigner` for MetaMask's wallet executor.
+
+This plugin was built against the published declarations of `@metamask/agent-wallet` 7.3.0; it imports MetaMask's
+plugin base class from the running `mm`, and neither bundles nor depends on MetaMask's packages.
+
 ## elizaOS
 
 The two free tools as elizaOS 2.x actions, `RECTA_FIT` and `RECTA_TRIAL_EVALUATION`. No key: the plugin signs nothing

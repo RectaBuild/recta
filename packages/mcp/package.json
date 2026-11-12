@@ -1,8 +1,8 @@
 {
   "name": "@recta/mcp",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "mcpName": "io.github.RectaBuild/recta",
-  "description": "Local MCP server for Recta (api.recta.build): lets any MCP agent evaluate, authorize and execute cheaper cross-chain stablecoin routes with its own key, which never leaves the machine.",
+  "description": "Local MCP server for Recta (api.recta.build): lets any MCP agent evaluate, authorize and execute cheaper cross-chain stablecoin routes with its own key, which never leaves the machine. Also a MetaMask Agent Wallet (mm) plugin: mm recta move.",
   "license": "MIT",
   "author": "Recta (https://recta.build)",
   "homepage": "https://github.com/RectaBuild/recta/tree/main/packages/mcp#readme",
@@ -25,7 +25,10 @@
     "agentkit",
     "coinbase-agentkit",
     "goat-sdk",
-    "elizaos"
+    "elizaos",
+    "metamask",
+    "metamask-agent-wallet",
+    "oclif-plugin"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -46,6 +49,10 @@
       "types": "./dist/goat.d.ts",
       "import": "./dist/goat.js"
     },
+    "./metamask": {
+      "types": "./dist/metamask.d.ts",
+      "import": "./dist/metamask.js"
+    },
     "./elizaos": {
       "types": "./dist/elizaos.d.ts",
       "import": "./dist/elizaos.js"
@@ -53,6 +60,7 @@
   },
   "files": [
     "dist",
+    "oclif.manifest.json",
     "README.md",
     "LICENSE"
   ],
@@ -61,7 +69,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json && node scripts/mm-manifest.mjs"
   },
   "dependencies": {
     "@recta/client": "0.1.7",
@@ -77,11 +85,145 @@
     "provenance": true
   },
   "peerDependencies": {
-    "zod": "^3.22.4 || ^4.0.0"
+    "zod": "^3.22.4 || ^4.0.0",
+    "@metamask/agent-wallet": "^7.3.0"
   },
   "peerDependenciesMeta": {
     "zod": {
       "optional": true
+    },
+    "@metamask/agent-wallet": {
+      "optional": true
     }
+  },
+  "oclif": {
+    "bin": "mm",
+    "commands": "./dist/mm/commands"
+  },
+  "mm": {
+    "schemaVersion": 1,
+    "minCliVersion": "^7.3.0",
+    "capabilities": [],
+    "commands": [
+      {
+        "id": "recta:fit",
+        "capabilities": [],
+        "dataAccess": [],
+        "targetChains": "any"
+      },
+      {
+        "id": "recta:trial",
+        "capabilities": [
+          "wallet-read"
+        ],
+        "dataAccess": [
+          "accounts"
+        ],
+        "targetChains": "any"
+      },
+      {
+        "id": "recta:move",
+        "capabilities": [
+          "wallet-read",
+          "wallet-submit"
+        ],
+        "dataAccess": [
+          "accounts",
+          "balances"
+        ],
+        "targetChains": [
+          1,
+          10,
+          56,
+          130,
+          137,
+          143,
+          999,
+          5042,
+          8453,
+          42161,
+          43114,
+          57073,
+          59144
+        ]
+      },
+      {
+        "id": "recta:report",
+        "capabilities": [
+          "wallet-read",
+          "wallet-submit"
+        ],
+        "dataAccess": [
+          "accounts"
+        ],
+        "targetChains": [
+          8453
+        ]
+      },
+      {
+        "id": "recta:ledger",
+        "capabilities": [
+          "wallet-read",
+          "wallet-submit"
+        ],
+        "dataAccess": [
+          "accounts"
+        ],
+        "targetChains": [
+          8453
+        ]
+      },
+      {
+        "id": "recta:fee-funds",
+        "capabilities": [
+          "wallet-read"
+        ],
+        "dataAccess": [
+          "accounts",
+          "balances"
+        ],
+        "targetChains": [
+          8453
+        ]
+      },
+      {
+        "id": "recta:approve-fee",
+        "capabilities": [
+          "wallet-read",
+          "wallet-submit"
+        ],
+        "dataAccess": [
+          "accounts",
+          "balances"
+        ],
+        "targetChains": [
+          8453
+        ]
+      },
+      {
+        "id": "recta:pay-debt",
+        "capabilities": [
+          "wallet-read",
+          "wallet-submit"
+        ],
+        "dataAccess": [
+          "accounts",
+          "balances"
+        ],
+        "targetChains": [
+          8453
+        ]
+      },
+      {
+        "id": "recta:recover",
+        "capabilities": [
+          "wallet-read"
+        ],
+        "dataAccess": [
+          "accounts"
+        ],
+        "targetChains": "any"
+      }
+    ]
   }
 }
