@@ -140,7 +140,9 @@ committed to exact ones. Preview the route there and send it with `@recta/client
 The two free tools as elizaOS 2.x actions, `RECTA_FIT` and `RECTA_TRIAL_EVALUATION`. No key: the plugin signs nothing
 and sends nothing. It asks Recta, unsigned, whether a cheaper provable route exists for a cross-chain stablecoin
 transfer the agent would make anyway, for example with LI.FI (`baseline_provider: "lifi"`) or Stargate
-(`"stargate_v2"`), and what Recta's 5 % of that saving would be. 3 trials a day per IP address.
+(`"stargate_v2"`), and what Recta's 5 % of that saving would be. 3 trials a day per IP address: every
+`RECTA_TRIAL_EVALUATION` call counts, so call it once per transfer you are about to make. A transfer to Solana needs a
+base58 `recipient`.
 
 ```ts
 import { rectaPlugin } from "@recta/mcp/elizaos";

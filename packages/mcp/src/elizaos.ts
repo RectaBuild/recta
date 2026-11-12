@@ -100,7 +100,7 @@ function parametersOf(schema: { readonly properties?: Readonly<Record<string, Js
   const required = new Set(schema.required ?? []);
   return Object.entries(schema.properties ?? {}).map(([name, p]) => ({
     name,
-    description: p.description ?? name.replace(/_/g, " "),
+    description: name === "recipient" ? `${p.description ?? "Destination address."} To Solana, give a base58 Solana address: the EVM sender is not one.` : (p.description ?? name.replace(/_/g, " ")),
     required: required.has(name),
     schema: p.enum !== undefined && p.enum.length > 0 ? { type: "string", enum: [...p.enum] } : { type: "string" },
   }));
@@ -129,14 +129,22 @@ export function rectaElizaPlugin(options: RectaElizaOptions = {}): ElizaPluginLi
   if (options.address !== undefined && !ADDRESS.test(options.address)) throw new Error("address must be an EVM address, 0x + 40 hex characters");
   const ids = networkChainIds();
   const ceilings = { maxFeePerGasWei: options.maxFeePerGasWei ?? 50n * GWEI, maxPriorityFeePerGasWei: options.maxPriorityFeePerGasWei ?? 2n * GWEI };
-  const servers = new Map<string, ReturnType<typeof createLocalServer>>();
+  // One keyless server per runtime and sender address, so each runtime keeps its own RPC settings (Fable L-3 on #20).
+  const servers = new WeakMap<object, Map<string, ReturnType<typeof createLocalServer>>>();
+  const noRuntime = {};
   let next = 0;
 
   function serverFor(runtime: ElizaRuntimeLike | undefined) {
     const address = options.address ?? settingOf(runtime, "RECTA_ADDRESS");
     if (address !== undefined && !ADDRESS.test(address)) throw new Error("RECTA_ADDRESS must be an EVM address, 0x + 40 hex characters (a public address, never a key)");
     const key = address?.toLowerCase() ?? "";
-    const known = servers.get(key);
+    const scope = typeof runtime === "object" && runtime !== null ? runtime : noRuntime;
+    let byAddress = servers.get(scope);
+    if (byAddress === undefined) {
+      byAddress = new Map();
+      servers.set(scope, byAddress);
+    }
+    const known = byAddress.get(key);
     if (known !== undefined) return known;
     const estimate =
       options.estimateFeesPerGas ??
@@ -158,7 +166,7 @@ export function rectaElizaPlugin(options: RectaElizaOptions = {}): ElizaPluginLi
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       ...(options.now === undefined ? {} : { now: options.now }),
     });
-    servers.set(key, server);
+    byAddress.set(key, server);
     return server;
   }
 

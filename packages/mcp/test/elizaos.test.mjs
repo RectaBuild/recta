@@ -32,6 +32,7 @@ test("only the two free actions, with parameters from the MCP schemas", () => {
   assert.ok(trial.parameters.some((x) => x.name === "sender" && !x.required));
   assert.deepEqual(trial.parameters.find((x) => x.name === "latency_class").schema.enum, ["SECONDS", "MINUTES", "FINALITY_BOUND", "ANY"]);
   assert.match(trial.routingHint, /never moves funds/);
+  assert.match(trial.parameters.find((x) => x.name === "recipient").description, /base58/);
   assert.equal(rectaPlugin.actions.length, 2);
   assert.equal(defaultPlugin, rectaPlugin);
 });
@@ -98,4 +99,18 @@ test("fit: free GET with the corridor, no sender needed", async () => {
   assert.equal(u.pathname, "/v1/golden-corridor/fit");
   assert.equal(u.searchParams.get("destination_asset"), "USDC");
   assert.equal(calls[0].init.method ?? "GET", "GET");
+});
+
+test("each runtime gets its own server, so its own RPC setting (Fable L-3)", async () => {
+  const asked = [];
+  const p = rectaElizaPlugin({ address: addr, fetch: async () => new Response("{}", { status: 200 }) });
+  const trial = p.actions.find((a) => a.name === "RECTA_TRIAL_EVALUATION");
+  // No estimateFeesPerGas option: the source RPC comes from each runtime's own setting (a closed local port here).
+  const rt = (tag) => ({ getSetting: (k) => { asked.push(`${tag}:${k}`); return k === "RECTA_RPC_URL_1" ? "http://127.0.0.1:9" : undefined; } });
+  const r1 = await trial.handler(rt("a"), {}, undefined, { parameters: args });
+  const r2 = await trial.handler(rt("b"), {}, undefined, { parameters: args });
+  assert.equal(r1.success, false);
+  assert.equal(r2.success, false);
+  assert.ok(asked.includes("a:RECTA_RPC_URL_1"));
+  assert.ok(asked.includes("b:RECTA_RPC_URL_1"));
 });
