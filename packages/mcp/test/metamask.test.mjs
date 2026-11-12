@@ -337,7 +337,7 @@ test("M-3: mm recta move --execute signs the fee permit, sends Recta's two trans
   const report = JSON.parse(new TextDecoder().decode(seen.find((r) => r.path.endsWith("/execution")).body));
   assert.deepEqual(report, { origin_tx_hash: `0x${"02".repeat(32)}`, approval_tx_hash: `0x${"01".repeat(32)}` });
   // B-4: Recta can tell mm's use apart from the MCP server's.
-  assert.match(seen.at(-1).headers["user-agent"], /^recta-mcp\/0\.1\.12 \(mm\)$/);
+  assert.match(seen.at(-1).headers["user-agent"], /^recta-mcp\/0\.1\.13 \(mm\)$/);
 });
 
 const transferSent = async (opts, recta = collectingRecta()) => {

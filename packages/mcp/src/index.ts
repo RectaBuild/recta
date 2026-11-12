@@ -152,7 +152,7 @@ export function gasCapsFrom(
   };
 }
 
-function chainOf(id: number): Chain {
+export function chainOf(id: number): Chain {
   const chain = Object.values(chains).find((c) => typeof c === "object" && c !== null && (c as Chain).id === id) as Chain | undefined;
   if (chain === undefined) throw new Error(`no known chain ${id}`);
   return chain;

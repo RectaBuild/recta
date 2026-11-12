@@ -208,6 +208,30 @@ transaction:
 This plugin was built against the published declarations of `@metamask/agent-wallet` 7.3.0; it imports MetaMask's
 plugin base class from the running `mm`, and neither bundles nor depends on MetaMask's packages.
 
+## elizaOS
+
+The two free tools as elizaOS 2.x actions, `RECTA_FIT` and `RECTA_TRIAL_EVALUATION`. No key: the plugin signs nothing
+and sends nothing. It asks Recta, unsigned, whether a cheaper provable route exists for a cross-chain stablecoin
+transfer the agent would make anyway, for example with LI.FI (`baseline_provider: "lifi"`) or Stargate
+(`"stargate_v2"`), and what Recta's 5 % of that saving would be. 3 trials a day per IP address: every
+`RECTA_TRIAL_EVALUATION` call counts, so call it once per transfer you are about to make. A transfer to Solana needs a
+base58 `recipient`.
+
+```ts
+import { rectaPlugin } from "@recta/mcp/elizaos";
+
+export const character = {
+  name: "treasury-agent",
+  plugins: [rectaPlugin],
+  settings: { RECTA_ADDRESS: "0x…" /* public address the transfers leave from; a call may also pass sender */ },
+};
+```
+
+`rectaElizaPlugin({ address, estimateFeesPerGas, maxFeePerGasWei, maxPriorityFeePerGasWei })` builds it with your own
+options. The source chain's fee estimate comes from its public RPC unless you set `RECTA_RPC_URL_<chainId>` or pass
+`estimateFeesPerGas`. elizaOS 1.x actions take no `parameters`, so there the actions answer `MISSING_PARAMETERS` and
+never call Recta. To get and execute the route itself, use `npx @recta/mcp` with a key or `@recta/client`.
+
 ## Referral for integrators
 
 If you ship Recta inside a plugin, framework or agent template, set your own EVM address once as the `referrer` (`RECTA_REFERRER` for this server, the `referrer` option of the AgentKit provider and the GOAT plugin) and
