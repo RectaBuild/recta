@@ -42,9 +42,15 @@ jobs:
           names=$(echo "$free" | head -1 | grep -o '"name":"recta_[a-z_]*"' | sort | tr '\n' ' ')
           [ "$names" = '"name":"recta_fit" "name":"recta_trial_evaluation" ' ] || { echo "keyless tools/list is not exactly fit + trial: $names"; exit 1; }
           echo "$free" | tail -1 | grep -q 'no_key' || { echo "a signing tool was not refused without a key"; exit 1; }
-      - name: AgentKit and GOAT adapters
+      - name: AgentKit, GOAT and elizaOS adapters
         working-directory: packages/mcp
-        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs test/smart-account.test.mjs
+        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs test/smart-account.test.mjs test/elizaos.test.mjs
+      - name: The elizaOS plugin is an elizaOS 2.x Plugin
+        working-directory: packages/mcp
+        run: |
+          set -euo pipefail
+          npm install --no-save --no-package-lock --ignore-scripts ../client/recta-client-*.tgz viem@2.56.3 typescript@5.9.3 @types/node@22.20.2 zod@3.25.76 @elizaos/core@2.0.5
+          npx tsc -p test/tsconfig.elizaos.json
       - name: Package contents
         working-directory: packages/mcp
         run: npm pack --dry-run
