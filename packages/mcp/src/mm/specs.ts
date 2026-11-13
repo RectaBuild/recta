@@ -49,8 +49,8 @@ const LIMITS: readonly InputSpec[] = [
   setting("max-fee-gwei", "Ceiling on the source chain's max fee per gas, in gwei (default 50)."),
   setting("max-priority-fee-gwei", "Ceiling on the source chain's priority fee per gas, in gwei (default 2)."),
   setting("referrer", "Who referred this agent: the EVM address of the plugin, template or setup author (optional)."),
-  setting("max-amount", "Most one transfer may move, in whole tokens of the asset (default 1000)."),
-  setting("allowed-recipients", "Addresses besides the wallet itself that may receive a transfer, comma-separated (default none)."),
+  setting("max-amount", "Most one transfer may move, in whole tokens of the asset (default 1000). A default, not a barrier: whoever runs the command can raise it; MetaMask's policy is the barrier."),
+  setting("allowed-recipients", "Addresses besides the wallet itself that may receive a transfer, comma-separated (default none). A default, not a barrier: whoever runs the command can widen it."),
 ];
 
 export interface CommandSpec {

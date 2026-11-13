@@ -2,7 +2,9 @@
 // or into one to someone else's address, is refused before anything is signed. Run after the build: node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
 import { checkTransfer, configFromEnv, DEFAULT_MAX_AMOUNT, keylessSigner } from "../dist/index.js";
 import { createLocalServer } from "../dist/server.js";
@@ -105,4 +107,35 @@ test("metaMaskRectaServer carries the limits; mm recta move takes --max-amount a
   await assert.rejects(runCommand(move, ctx, {}, { ...route, amount: "100", recipient: stranger, "allowed-recipients": stranger }, f), /must not fetch/);
   await assert.rejects(runCommand(move, ctx, {}, { ...route, amount: "100", "max-amount": "none" }, f), /--max-amount must be/);
   assert.deepEqual(asked, []);
+});
+
+// Fable M-1 on #21: the commands that move money, with execution on.
+test("recta_execute moves only a result_id this server evaluated under the limits: any other is refused before signing", async () => {
+  const { s, calls, signed } = server({ maxAmount: "10", allowedRecipients: [] });
+  await assert.rejects(s.call("recta_execute", { result_id: "r_1" }), (e) => e.check === "result_id");
+  // Above the cap the evaluation never happens, so there is no result_id to execute.
+  await assert.rejects(s.call("recta_evaluate", { ...args, amount: "11" }), (e) => e.check === "amount_limit");
+  await assert.rejects(s.call("recta_execute", { result_id: "r_1" }), (e) => e.check === "result_id");
+  assert.equal(signed.length, 0);
+  assert.equal(calls.length, 0);
+});
+
+test("mm recta move --execute above the limits: refused before MetaMask is asked, and no send attempt is journaled", async () => {
+  const move = COMMAND_SPECS.find((c) => c.id === "recta:move");
+  const route = { "source-network": "base", "source-asset": "USDC", "destination-network": "arbitrum", "baseline-provider": "stargate_v2", execute: true };
+  const asked = [];
+  const journalDir = mkdtempSync(join(tmpdir(), "recta-limits-"));
+  const ctx = {
+    journalDir,
+    walletStateManager: { read: () => ({ byokWallets: [{ id: "w1", address: wallet, namespace: "eip155" }], selectedWallet: { namespace: "eip155", ref: { id: "w1" } } }) },
+    publicClient: () => ({ estimateFeesPerGas: async () => ({ maxFeePerGas: 7_000_000n, maxPriorityFeePerGas: 1_000_000n }) }),
+    walletExecutor: async () => async (request) => { asked.push(request.kind); throw new Error("must not be asked"); },
+  };
+  const f = async () => { throw new Error("must not fetch"); };
+  const refused = (check) => (e) => e.body?.check === check;
+  await assert.rejects(runCommand(move, ctx, {}, { ...route, amount: "1000.01" }, f), refused("amount_limit"));
+  await assert.rejects(runCommand(move, ctx, {}, { ...route, amount: "100", recipient: stranger }, f), refused("recipient_not_allowed"));
+  assert.deepEqual(asked, []);
+  const journaled = readdirSync(journalDir).filter((n) => n.endsWith(".json")).map((n) => JSON.parse(readFileSync(join(journalDir, n), "utf8")));
+  assert.ok(journaled.every((j) => (j.attempts ?? []).length === 0), JSON.stringify(journaled));
 });
