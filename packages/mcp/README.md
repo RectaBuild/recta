@@ -55,6 +55,8 @@ wallet's funds.
 | `RECTA_MAX_FEE_GWEI` | `50` | The highest source-chain `maxFeePerGas` an evaluation may commit to, whatever the RPC estimates. |
 | `RECTA_MAX_PRIORITY_FEE_GWEI` | `2` | The highest priority fee an evaluation may commit to. |
 | `RECTA_MIN_OUTPUT_BPS` | `9900` | The route must guarantee the recipient at least this share of the amount sent, in basis points (1–10000). |
+| `RECTA_MAX_AMOUNT` | `1000` | The most one transfer may move, in whole tokens of `source_asset` (`1000` with USDC means 1000 USDC). A larger `amount` is refused before anything is signed. |
+| `RECTA_ALLOWED_RECIPIENTS` | none: the wallet only | Addresses, separated by commas, that may receive a transfer besides the wallet itself. Any other `recipient` is refused before anything is signed. |
 | `RECTA_SMART_ACCOUNT` | none: an EOA | Set to `coinbase` when the agent's wallet is a Coinbase Smart Wallet on Base owned by `RECTA_PRIVATE_KEY`. See "Smart accounts". Any other value stops the server. |
 | `RECTA_BUNDLER_URL` | none | With `RECTA_SMART_ACCOUNT`, required: an `https` ERC-4337 bundler URL on Base. Route transactions are sent through it as user operations. |
 | `RECTA_PAYMASTER_URL` | none | With `RECTA_SMART_ACCOUNT`, optional: an `https` paymaster URL on Base that sponsors the gas. Without it the account pays its gas in ETH on Base. |
@@ -66,7 +68,8 @@ wallet's funds.
 ## Amount
 
 `amount` is how much of `source_asset` to send, in whole tokens (not cents, not wei): `"100"` with USDC means 100 USDC.
-The minimum is 3.5 for stablecoins (about 3.5 USD). There is no maximum.
+The minimum is 3.5 for stablecoins (about 3.5 USD). Recta sets no maximum, but this server refuses more than
+`RECTA_MAX_AMOUNT` (default 1000) per transfer.
 
 ## Tools
 
@@ -161,7 +164,8 @@ mm recta move --source-network base --source-asset USDC --destination-network ar
 `move` runs in one go, because each `mm` command is a separate process: without `--execute` it stops after the
 preview; with `--execute` Recta evaluates again at the current chain state and then executes. Limits are flags with
 the same defaults as this server: `--max-fee-usdc` (1), `--max-native-wei` (0), `--min-output-bps` (9900),
-`--max-fee-gwei` (50), `--max-priority-fee-gwei` (2) and `--referrer`. The wallet is the one selected in `mm`, or
+`--max-fee-gwei` (50), `--max-priority-fee-gwei` (2), `--max-amount` (1000), `--allowed-recipients` (none: the
+wallet only) and `--referrer`. The wallet is the one selected in `mm`, or
 `--address`.
 
 Every signature must recover to that address before Recta sees it. Every transaction is sent with Recta's exact gas
@@ -278,6 +282,45 @@ the fee. On start the server prints the account's address on stderr.
 ## What each request identifies
 
 Every request this package sends carries the User-Agent `recta-mcp/<version>`, so Recta can count real use of the package apart from other clients. It names the package and its version only: never an address, a key or a request body.
+
+## Safety
+
+What this server can do with the wallet, and what stops it:
+
+- **The key.** With `RECTA_PRIVATE_KEY` the key is in plain text on this machine (see above): use a dedicated wallet
+  that holds only what the agent may move. Recta's server never receives it. To keep the key off the machine, use
+  MetaMask's agent wallet (`mm recta …`, below: MetaMask holds the key, with its own policy and optional two-factor
+  approval) or a Coinbase CDP account through `@recta/client`'s `cdpSigner` (Coinbase holds the key, and the
+  [CDP policy Recta serves](https://api.recta.build/v1/golden-corridor/wallet-policy/cdp) restricts it).
+- **How much, and to whom.** One transfer moves at most `RECTA_MAX_AMOUNT` (default 1000 tokens), and only to the
+  wallet itself or an address in `RECTA_ALLOWED_RECIPIENTS`. Both are checked before the request is signed and again
+  before the route is sent, so an agent talked into a larger transfer, or into paying someone else, is refused. They
+  are limits per transfer: for a daily limit, use your wallet's own policy, or keep in the wallet only what the agent
+  may move.
+- **What Recta can take.** Only the fee permit, at most `RECTA_MAX_FEE_USDC` (default 1 USDC) per transfer. Recta
+  settles exactly 5 % of the saving it verifies on chain, never more than the permit, and nothing without a saving.
+- **Which contracts.** Only the bridge contracts pinned in this release (Across, CCTP V2, Stargate and LayerZero OFT),
+  with approvals of exactly the amount sent and no message or hook run at the destination. A contract the release does
+  not know is refused. Recta picks the cheapest of these routes; it does not rank them by security.
+- **If the price moves.** The transaction itself fixes the least the recipient gets (at least `RECTA_MIN_OUTPUT_BPS`,
+  default 99 % of the amount), and its gas price ceilings. A decision expires, and an expired one is never sent. The fee
+  is computed on the saving of the transfer as executed: if the saving shrinks, so does the fee.
+- **Replays.** Each signed request carries its time (accepted within 5 minutes), an idempotency key and the hash of
+  its body; a repeat returns the stored answer, never a second decision. A fee permit has a Permit2 nonce and can be
+  used once. Route transactions use the wallet's own nonce.
+- **What Recta records.** Each signed request (sender, recipient, amount and corridor) and its decision. A decision
+  without a saving keeps its full record 30 days; one with a saving is kept, as the record of a fee. A verified saving
+  is published in Recta's public savings ledger with both transaction hashes, so it can be linked to the wallet on
+  chain. The free trial stores no decision and no address (only a keyed fingerprint of the sender, 30 days, to count
+  how many trials lead to a signed evaluation). Recta's log lines for evaluations and executions say what happened,
+  never who: no address, amount or transaction hash; they are kept 7 days. Cloudflare, which hosts Recta, sees each
+  request's IP address. This server sends no key and nothing beyond these requests; its User-Agent names only the
+  package and its version.
+- **Review.** The code and the fee contract have been audited adversarially by Recta, and the contract was simulated
+  against Base's real Permit2, but there has been no independent external audit yet. Start with small amounts.
+- **Changes.** Recta's routes, contracts and fee addresses are pinned in each release: if the service changes and no
+  longer matches, this server refuses to sign until you install a release that knows the change. Pin the version you
+  reviewed (`npx -y @recta/mcp@<version>`); every release is published from GitHub with npm provenance.
 
 ## Limits of this version
 

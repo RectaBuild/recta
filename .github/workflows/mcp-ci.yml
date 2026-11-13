@@ -46,7 +46,7 @@ jobs:
           echo "$free" | tail -1 | grep -q 'no_key' || { echo "a signing tool was not refused without a key"; exit 1; }
       - name: AgentKit, GOAT, MetaMask and elizaOS adapters
         working-directory: packages/mcp
-        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs test/smart-account.test.mjs test/metamask.test.mjs test/elizaos.test.mjs
+        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs test/smart-account.test.mjs test/metamask.test.mjs test/elizaos.test.mjs test/transfer-limits.test.mjs
       - name: The elizaOS plugin is an elizaOS 2.x Plugin
         working-directory: packages/mcp
         run: |

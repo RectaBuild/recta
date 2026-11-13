@@ -4,9 +4,9 @@ import { createBundlerClient, createPaymasterClient, toCoinbaseSmartAccount } fr
 import { privateKeyToAccount } from "viem/accounts";
 import * as chains from "viem/chains";
 import { DEFAULT_USER_OPERATION_OVERHEAD_GAS, PINNED_ROUTES, RectaCheckError, smartAccountSigner, viemChainReader, viemSigner, type RectaSigner } from "@recta/client";
-import { createLocalServer } from "./server.js";
+import { createLocalServer, decimalUnits } from "./server.js";
 
-export { createLocalServer, TOOLS, MCP_PROTOCOL_VERSIONS, SERVER_INFO, type LocalServerOptions } from "./server.js";
+export { createLocalServer, checkTransfer, TOOLS, MCP_PROTOCOL_VERSIONS, SERVER_INFO, type LocalServerOptions, type TransferLimits } from "./server.js";
 
 /** Recta's network key → EVM chain id, from the client's pinned routes (`<network>:<asset>>…`). */
 export function networkChainIds(): Map<string, number> {
@@ -28,6 +28,10 @@ export interface EnvConfig {
   /** Operator ceilings on the source gas price an evaluation may commit to, whatever the RPC estimates (Fable #260 B-1). */
   readonly maxFeePerGasWei: bigint;
   readonly maxPriorityFeePerGasWei: bigint;
+  /** RECTA_MAX_AMOUNT: the most one transfer may move, in whole tokens of the source asset (default 1000). */
+  readonly maxAmount: string;
+  /** RECTA_ALLOWED_RECIPIENTS: addresses besides the wallet itself that may receive a transfer (default none). */
+  readonly allowedRecipients: readonly string[];
   /** RECTA_REFERRER: who referred this agent (OD-REF-1), usually the author of the template or setup that runs it. */
   readonly referrer?: string;
   /**
@@ -88,6 +92,10 @@ export function configFromEnv(env: Readonly<Record<string, string | undefined>>)
   const referrer = env["RECTA_REFERRER"];
   if (referrer !== undefined && referrer !== "" && !/^0x[0-9a-fA-F]{40}$/.test(referrer)) throw new Error("RECTA_REFERRER must be the referrer's 0x-prefixed EVM address");
   const smartAccount = smartAccountFromEnv(env, key !== undefined);
+  const maxAmount = set(env["RECTA_MAX_AMOUNT"]) ?? DEFAULT_MAX_AMOUNT;
+  if (decimalUnits(maxAmount) === undefined || decimalUnits(maxAmount) === 0n) throw new Error("RECTA_MAX_AMOUNT must be a positive decimal number of whole tokens, e.g. 1000 or 250.5");
+  const allowedRecipients = (set(env["RECTA_ALLOWED_RECIPIENTS"]) ?? "").split(",").map((a) => a.trim()).filter((a) => a !== "");
+  for (const a of allowedRecipients) if (!/^0x[0-9a-fA-F]{40}$/.test(a)) throw new Error(`RECTA_ALLOWED_RECIPIENTS must be 0x-prefixed EVM addresses separated by commas; ${a} is not one`);
   const bps = Number(env["RECTA_MIN_OUTPUT_BPS"] ?? "9900");
   if (!Number.isInteger(bps) || bps < 1 || bps > 10_000) throw new Error("RECTA_MIN_OUTPUT_BPS must be an integer from 1 to 10000");
   return {
@@ -97,6 +105,8 @@ export function configFromEnv(env: Readonly<Record<string, string | undefined>>)
     maxPermitUsdcAtomic: BigInt(whole!) * 1_000_000n + BigInt(frac.padEnd(6, "0")),
     maxNativeValueWei: BigInt(native),
     minOutputBps: bps,
+    maxAmount,
+    allowedRecipients: allowedRecipients.map((a) => a.toLowerCase()),
     // Without a key nothing can be signed or sent, whatever RECTA_ALLOW_EXECUTE says.
     allowExecute: key !== undefined && env["RECTA_ALLOW_EXECUTE"] === "yes",
     maxFeePerGasWei: gweiToWei(env["RECTA_MAX_FEE_GWEI"] ?? "50", "RECTA_MAX_FEE_GWEI"),
@@ -105,6 +115,9 @@ export function configFromEnv(env: Readonly<Record<string, string | undefined>>)
     ...(smartAccount === undefined ? {} : { smartAccount }),
   };
 }
+
+/** RECTA_MAX_AMOUNT's default, in whole tokens: a stablecoin transfer above it needs the operator to raise it. */
+export const DEFAULT_MAX_AMOUNT = "1000";
 
 const set = (v: string | undefined): string | undefined => (v === undefined || v === "" ? undefined : v);
 
@@ -208,6 +221,7 @@ export async function main(): Promise<void> {
     chain: viemChainReader((id) => createPublicClient({ chain: chainOf(id), transport: transport(id) })),
     limits: { maxPermitUsdcAtomic: config.maxPermitUsdcAtomic, maxNativeValueWei: config.maxNativeValueWei, minOutputBps: config.minOutputBps },
     allowExecute: config.allowExecute,
+    transfer: { maxAmount: config.maxAmount, allowedRecipients: config.allowedRecipients },
     ...(config.referrer === undefined ? {} : { referrer: config.referrer }),
     gasCapsFor: gasCapsFrom(config, ids, (id) => createPublicClient({ chain: chainOf(id), transport: transport(id) }).estimateFeesPerGas()),
   });

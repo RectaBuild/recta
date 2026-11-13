@@ -35,9 +35,9 @@ const ROUTE: readonly InputSpec[] = [
 ];
 const TRANSFER: readonly InputSpec[] = [
   ...ROUTE,
-  text("amount", "Amount in whole units of the asset (100 means 100 USDC), at least 3.5, no maximum.", { required: true }),
+  text("amount", "Amount in whole units of the asset (100 means 100 USDC), at least 3.5, at most --max-amount.", { required: true }),
   text("baseline-provider", "The route you would use without Recta, one of the corridor's declarable_baselines in mm recta fit: across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi.", { required: true }),
-  text("recipient", "Receiving address on the destination; default the wallet itself."),
+  text("recipient", "Receiving address on the destination; default the wallet itself. Any other address must be in --allowed-recipients."),
   text("guarantee-class", "COMMITTED_ENFORCED or ANY (default ANY)."),
   text("latency-class", "SECONDS, MINUTES, FINALITY_BOUND or ANY (default ANY)."),
 ];
@@ -49,6 +49,8 @@ const LIMITS: readonly InputSpec[] = [
   setting("max-fee-gwei", "Ceiling on the source chain's max fee per gas, in gwei (default 50)."),
   setting("max-priority-fee-gwei", "Ceiling on the source chain's priority fee per gas, in gwei (default 2)."),
   setting("referrer", "Who referred this agent: the EVM address of the plugin, template or setup author (optional)."),
+  setting("max-amount", "Most one transfer may move, in whole tokens of the asset (default 1000)."),
+  setting("allowed-recipients", "Addresses besides the wallet itself that may receive a transfer, comma-separated (default none)."),
 ];
 
 export interface CommandSpec {
@@ -540,6 +542,8 @@ async function runSpec(spec: CommandSpec, ctx: MmContextLike, io: unknown, flags
     RECTA_MAX_FEE_GWEI: s("max-fee-gwei"),
     RECTA_MAX_PRIORITY_FEE_GWEI: s("max-priority-fee-gwei"),
     RECTA_REFERRER: s("referrer"),
+    RECTA_MAX_AMOUNT: s("max-amount"),
+    RECTA_ALLOWED_RECIPIENTS: s("allowed-recipients"),
   };
   let config: ReturnType<typeof configFromEnv>;
   try {
