@@ -257,6 +257,9 @@ export interface MetaMaskRectaLimits {
   readonly minOutputBps: number;
   readonly maxFeePerGasWei: bigint;
   readonly maxPriorityFeePerGasWei: bigint;
+  /** The transfer limits of `npx @recta/mcp` (--max-amount, --allowed-recipients); absent: no transfer check. */
+  readonly maxAmount?: string;
+  readonly allowedRecipients?: readonly string[];
 }
 
 /**
@@ -288,6 +291,7 @@ export function metaMaskRectaServer(args: {
     chain: metaMaskChainReader(args.publicClientFor),
     limits: { maxPermitUsdcAtomic: args.limits.maxPermitUsdcAtomic, maxNativeValueWei: args.limits.maxNativeValueWei, minOutputBps: args.limits.minOutputBps },
     allowExecute: !keyless && args.execute !== undefined && args.allowExecute,
+    ...(args.limits.maxAmount === undefined ? {} : { transfer: { maxAmount: args.limits.maxAmount, allowedRecipients: args.limits.allowedRecipients ?? [] } }),
     gasCapsFor: async (network) => {
       const id = ids.get(network);
       if (id === undefined) throw new RectaCheckError("source_network", `${network} is not an EVM source Recta can execute`);

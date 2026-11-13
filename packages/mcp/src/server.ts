@@ -6,7 +6,7 @@ import { createRectaClient, safeErrorText, RectaCheckError, RectaDebtError, Rect
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.13" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.14" } as const;
 /** Sent on every request this package makes (its own and the client's), so Recta can count real use of it apart from
  *  other clients (no address, no key). */
 export const MCP_USER_AGENT = `recta-mcp/${SERVER_INFO.version}`;
@@ -38,8 +38,42 @@ export interface LocalServerOptions {
   readonly gasCapsFor: (network: string) => Promise<readonly [bigint, bigint]>;
   /** Who referred this agent (OD-REF-1): see `RectaClientOptions.referrer`. Usually set by the integration's author. */
   readonly referrer?: string;
+  /**
+   * The operator's limits on the transfer itself (RECTA_MAX_AMOUNT, RECTA_ALLOWED_RECIPIENTS): checked before a request
+   * is signed and again before a route is executed, so an agent talked into a larger transfer, or into one to someone
+   * else's address, is refused before anything is signed. Absent: no check (the toolkits, which never send a route).
+   */
+  readonly transfer?: TransferLimits;
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
+}
+
+export interface TransferLimits {
+  /** The most one transfer may move, in whole tokens of source_asset (a decimal string, e.g. "1000"). */
+  readonly maxAmount: string;
+  /** Addresses besides the wallet itself that may receive a transfer (lowercase 0x addresses). Empty: the wallet only. */
+  readonly allowedRecipients: readonly string[];
+}
+
+/** A decimal amount of whole tokens as an integer of 10^-18 tokens, or undefined when it is not a plain decimal. */
+export function decimalUnits(v: string): bigint | undefined {
+  const m = /^(\d{1,30})(?:\.(\d{1,18}))?$/.exec(v);
+  return m === null ? undefined : BigInt(m[1]!) * 10n ** 18n + BigInt((m[2] ?? "").padEnd(18, "0"));
+}
+
+/**
+ * Refuses a transfer above the operator's amount cap, or to a recipient that is neither the wallet nor on the operator's
+ * list. The wallet's own address is always allowed. An amount that is not a plain decimal is refused (it could not be
+ * compared with the cap).
+ */
+export function checkTransfer(limits: TransferLimits, request: { readonly amount: string; readonly sender: string; readonly recipient: string }): void {
+  const amount = decimalUnits(request.amount);
+  if (amount === undefined) throw new RectaCheckError("amount", "amount must be a plain decimal number of whole tokens, e.g. 100 or 3.5");
+  if (amount > decimalUnits(limits.maxAmount)!) throw new RectaCheckError("amount_limit", `amount ${request.amount} is above the operator's limit of ${limits.maxAmount} per transfer (RECTA_MAX_AMOUNT, or --max-amount in mm); nothing was signed`);
+  const to = request.recipient.toLowerCase();
+  if (to !== request.sender.toLowerCase() && !limits.allowedRecipients.includes(to)) {
+    throw new RectaCheckError("recipient_not_allowed", `recipient ${request.recipient} is neither this wallet nor on the operator's list (RECTA_ALLOWED_RECIPIENTS, or --allowed-recipients in mm); nothing was signed`);
+  }
 }
 
 type Json = Record<string, unknown>;
@@ -54,9 +88,9 @@ const EVALUATE_INPUT = {
   type: "object",
   properties: {
     ...ROUTE,
-    amount: { type: "string", description: "How much of source_asset to send, in whole tokens (not cents, not wei): \"100\" with USDC means 100 USDC. Minimum 3.5 for stablecoins (about 3.5 USD). No maximum." },
+    amount: { type: "string", description: "How much of source_asset to send, in whole tokens (not cents, not wei): \"100\" with USDC means 100 USDC. Minimum 3.5 for stablecoins (about 3.5 USD). Recta sets no maximum; this server refuses more than the operator's limit (RECTA_MAX_AMOUNT, default 1000)." },
     baseline_provider: { type: "string", description: "The route you would use without Recta, one of the corridor's declarable_baselines in recta_fit (GET /v1/golden-corridor/fit): across, stargate_v2, usdt0, usdg_oft, debridge_dln or lifi (LI.FI: declarable where recta_fit lists lifi in declarable_baselines, never with latency_class SECONDS or MINUTES; Recta reads LI.FI's own transaction, fee included). The saving is measured against it. Relay is compared but cannot be declared, and CCTP needs a destination execution authority this tool does not send." },
-    recipient: { type: "string", description: "Destination address; defaults to the local wallet." },
+    recipient: { type: "string", description: "Destination address; defaults to the local wallet. Any other address must be on the operator's list (RECTA_ALLOWED_RECIPIENTS), or the evaluation is refused before anything is signed." },
     guarantee_class: { type: "string", enum: ["COMMITTED_ENFORCED", "ANY"], description: "Default ANY." },
     latency_class: { type: "string", enum: ["SECONDS", "MINUTES", "FINALITY_BOUND", "ANY"], description: "Default ANY." },
   },
@@ -172,6 +206,8 @@ export function createLocalServer(options: LocalServerOptions) {
     if (given !== undefined && !ADDRESS.test(given)) throw new RectaCheckError("input", "sender must be an EVM address, 0x + 40 hex characters");
     const sender = given ?? options.signer.address;
     if (sender.toLowerCase() === ZERO_ADDRESS) throw new RectaCheckError("sender", "no sender: pass sender, or set RECTA_ADDRESS (a public address, never a key)");
+    // The operator's transfer limits, before any read, signature or request (a trial signs and moves nothing).
+    if (!trial && options.transfer !== undefined) checkTransfer(options.transfer, { amount: str(args, "amount"), sender, recipient: opt(args, "recipient") ?? sender });
     const source = str(args, "source_network");
     const [maxFee, priority] = await options.gasCapsFor(source);
     return {
@@ -228,6 +264,7 @@ export function createLocalServer(options: LocalServerOptions) {
       case "recta_execute": {
         if (!options.allowExecute) throw new RectaCheckError("execution_disabled", "the operator has not enabled execution (RECTA_ALLOW_EXECUTE=yes)");
         const { id, request } = requestOf(args);
+        if (options.transfer !== undefined) checkTransfer(options.transfer, request);
         const { fee, artifact } = await client.authorizeFee(id, { request });
         const sent = await client.execute(id, artifact, request);
         const report = await client.report(id, sent.originTxHash, sent.approvalTxHash);

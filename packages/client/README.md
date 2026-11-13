@@ -218,6 +218,37 @@ checks, exact amount).
 
 Every request this package sends carries the User-Agent `recta-client/<version>`, so Recta can count real use of the package apart from other clients. It names the package and its version only: never an address, a key or a request body.
 
+## Safety
+
+- **The key.** This package never receives a key: your signer signs and sends. Where the key lives is your choice of
+  signer (`viemSigner` with your own account, `cdpSigner` with the key kept at Coinbase, `smartAccountSigner`).
+- **How much, and to whom.** The amount and the recipient are the ones your request names; the package checks that the
+  route delivers exactly there, but it does not cap them. Cap them in your own code, or in your wallet's policy (a rule
+  on the deposit call's recipient and amount, if your wallet supports one, and a daily limit; Recta's wallet policy
+  limits contracts and approvals, not the amount or recipient a bridge deposit names). `@recta/mcp`'s local server (`npx @recta/mcp`, from 0.1.14) refuses a transfer
+  above `RECTA_MAX_AMOUNT` (default 1000 tokens) or to a recipient that is neither the wallet nor in
+  `RECTA_ALLOWED_RECIPIENTS`.
+- **What Recta can take.** Only the fee permit, within `maxPermitUsdcAtomic`: exactly 5 % of the saving verified on
+  chain, never more than the permit, nothing without a saving.
+- **Which contracts.** Exact-amount approvals to, and deposits into, the pinned bridge contracts (no message or hook at
+  the destination), and a bounded USDC approval to Permit2 on Base for the fee (`feeApproval`). The bridges are run by
+  third parties and some of their contracts are upgradeable proxies: the package pins their addresses, not their code.
+- **If the price moves.** The route transaction fixes the least the recipient gets (`minOutputBps`) and its gas price
+  ceilings; a decision already past its expiry is refused before the first transaction is sent. The fee is computed on
+  the saving of the transfer as executed.
+- **Replays.** A signed request carries its time (within 5 minutes of Recta's clock, either way) and its body's hash,
+  and an evaluation its idempotency key: a repeat returns the stored decision. A fee permit has a Permit2 nonce and can
+  be used once. Route transactions use your wallet's own nonce.
+- **What Recta records.** Each evaluation (sender, recipient, amount, corridor) and its decision; Recta does not delete
+  these records today. A verified saving is published in the public savings ledger with both transaction hashes. Recta's
+  log lines for evaluations and executions carry no wallet address, transfer amount or transaction hash; Cloudflare, which hosts Recta, sees each request's IP
+  address and keeps its request logs, whose URLs can include an address, 7 days.
+- **Review.** Audited adversarially by Recta, with the fee contract simulated against Base's real Permit2; no
+  independent external audit yet. Recta's server is not open source; this package is. Start with small amounts.
+- **Changes and supply chain.** Pin the exact version you reviewed and check `npm audit signatures`: Recta's routes,
+  contracts and fee addresses are pinned in each release, and a service that no longer matches them is refused, never
+  followed. It has no dependency of its own: `viem` is a peer range, so pin it too.
+
 ## Limits of this version
 
 - EVM sources and EVM recipients only. Solana, Tron and Bitcoin routes, Relay and deBridge are refused.
