@@ -320,8 +320,8 @@ What this server can do with the wallet, and what stops it:
   delete these records today. A verified saving is published in Recta's public savings ledger with both transaction
   hashes, so it can be linked to the wallet on chain. The free trial stores no decision and no address (only a keyed
   fingerprint of the sender, 30 days, to count how many trials lead to a signed evaluation). Rate limits count
-  requests per IP address and network for up to a day. Recta's own log lines carry no address, amount or transaction
-  hash. Cloudflare, which hosts Recta, sees each request's IP address, and its request logs (7 days) record each URL,
+  requests per IP address and network for up to a day. Recta's log lines for evaluations and executions carry no wallet address,
+  transfer amount or transaction hash. Cloudflare, which hosts Recta, sees each request's IP address, and its request logs (7 days) record each URL,
   which can include the wallet's address. This server sends no key and nothing beyond these requests; its User-Agent
   names only the package and its version.
 - **Review.** The code and the fee contract have been audited adversarially by Recta, and the contract was simulated
@@ -332,7 +332,8 @@ What this server can do with the wallet, and what stops it:
   a local key, this package runs next to that key, so a compromised release could reach it: pin the exact version you
   reviewed (`npx -y @recta/mcp@<version>`, never a range), and check `npm audit signatures` (every release is built
   from RectaBuild/recta by GitHub Actions, with npm provenance). Its dependencies are `@recta/client` and `viem`, at
-  exact versions.
+  exact versions; `zod` and `@metamask/agent-wallet` are optional peers, used only by the AgentKit/GOAT and `mm`
+  integrations.
 
 ## Limits of this version
 
