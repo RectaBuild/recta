@@ -71,6 +71,16 @@ wallet's funds.
 The minimum is 3.5 for stablecoins (about 3.5 USD). Recta sets no maximum, but this server refuses more than
 `RECTA_MAX_AMOUNT` (default 1000) per transfer.
 
+`RECTA_MAX_AMOUNT` takes any amount. Common choices:
+
+| `RECTA_MAX_AMOUNT` | Fits |
+| --- | --- |
+| `100` | Trying Recta out, or an agent that makes small payments. |
+| `500` | Small recurring transfers. |
+| `1000` | The default: everyday transfers of a single agent. |
+| `5000` | Larger operational transfers. |
+| `10000` | Treasury moves, with a wallet funded for them. |
+
 ## Tools
 
 | Tool | Signs or sends | What it does |
