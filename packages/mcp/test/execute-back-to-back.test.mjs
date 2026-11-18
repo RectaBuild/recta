@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { encodeFunctionData, pad, parseAbi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { createRectaClient, pins, RectaCheckError, viemSigner } from "@recta/client";
+import { createRectaClient, pins, RectaCheckError, RectaSendUnknownError, viemSigner } from "@recta/client";
 
 const policy = readFileSync(new URL("./wallet-policy.fixture.json", import.meta.url), "utf8");
 const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
@@ -149,4 +149,71 @@ test("viemSigner (local key): sendInSequence reads the nonce once and uses conse
   await signer.sendTransaction(tx);
   assert.equal(sent.at(-1), undefined);
   await assert.rejects(signer.sendInSequence([tx, { ...tx, chainId: 1 }], () => {}), /one chain/);
+});
+
+// Fable M-3 on #22 (owner rule 2026-11-11): a send that failed without a hash is UNKNOWN, never a plain failure.
+test("M-3: a first send that fails without a hash is UNKNOWN, on both paths; a wallet's own RectaCheckError passes unchanged", async () => {
+  for (const inSequence of [true, false]) {
+    const { client } = rig({ inSequence, sendFails: (i) => (i === 0 ? new Error("socket hang up https://rpc.example/KEY") : undefined) });
+    await assert.rejects(client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.startsWith("transaction_unknown: No transaction hash came back for r_test") && /its nonce/.test(e.message) && !e.message.includes("KEY"));
+    const own = new RectaCheckError("wallet_send_unknown", "x");
+    await assert.rejects(rig({ inSequence, sendFails: (i) => (i === 0 ? own : undefined) }).client.execute("r_test", artifact(), request), (e) => e === own);
+  }
+  const one = artifact();
+  one.transactions = one.transactions.slice(1);
+  await assert.rejects(rig({ sendFails: () => new Error("boom") }).client.execute("r_test", one, request), (e) => e.check === "transaction_unknown");
+});
+
+test("M-3: waiting step by step, a wait that throws or a later send that fails is UNKNOWN with every hash sent", async () => {
+  const waits = rig({ inSequence: false, waitThrows: (i) => i === 0 });
+  await assert.rejects(waits.client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.includes(`APPROVAL ${HASH(0)} sent for r_test`));
+  assert.deepEqual(waits.log, [`send 0 ${APPROVE_TO}`, "wait 0"]);
+  const second = rig({ inSequence: false, sendFails: (i) => (i === 1 ? new Error("boom") : undefined) });
+  await assert.rejects(second.client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.includes(`APPROVAL ${HASH(0)} sent for r_test, then sending the EXECUTION failed without a hash`));
+});
+
+test("viemSigner: a nonce that cannot be read stops before anything is sent (wallet_nonce, not UNKNOWN)", async () => {
+  const wallet = { chain: undefined, getChainId: async () => 8453, request: async () => { throw new Error("down https://rpc.example/KEY"); }, sendTransaction: async () => assert.fail("sent") };
+  const signer = viemSigner({ account, walletClientFor: () => wallet });
+  const tx = { chainId: 8453, to: SPOKE, data: "0x", value: 0n, gas: 21000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n };
+  await assert.rejects(signer.sendInSequence([tx, tx], () => {}), (e) => e.check === "wallet_nonce" && /nothing was sent/.test(e.message) && !e.message.includes("KEY"));
+});
+
+test("Fable M-A on #23: an UNKNOWN send is a RectaSendUnknownError with the result_id and the hashes as data", async () => {
+  const { client } = rig({ inSequence: false, waitThrows: (i) => i === 1 });
+  const e = await client.execute("r_test", artifact(), request).catch((x) => x);
+  assert.ok(e instanceof RectaSendUnknownError);
+  assert.equal(e.check, "transaction_unknown");
+  assert.equal(e.resultId, "r_test");
+  assert.deepEqual(e.sentTxHashes.map((s) => [s.role, s.hash]), [["APPROVAL", HASH(0)], ["EXECUTION", HASH(1)]]);
+  // Only an approval left: the message says the transfer was not sent.
+  const onlyApproval = await rig({ inSequence: false, waitThrows: (i) => i === 0 }).client.execute("r_test", artifact(), request).catch((x) => x);
+  assert.match(onlyApproval.message, /the transfer was not sent/);
+  // Step by step, a wallet's own RectaCheckError passes unchanged (MetaMask's journal holds its hashes).
+  const own = new RectaCheckError("wallet_send_unknown", "x");
+  assert.equal(await rig({ inSequence: false, sendFails: (i) => (i === 1 ? own : undefined) }).client.execute("r_test", artifact(), request).catch((x) => x), own);
+  // A deposit alone whose wait throws.
+  const one = artifact();
+  one.transactions = one.transactions.slice(1);
+  const solo = await rig({ waitThrows: () => true }).client.execute("r_test", one, request).catch((x) => x);
+  assert.ok(solo instanceof RectaSendUnknownError);
+  assert.deepEqual(solo.sentTxHashes.map((s) => s.role), ["EXECUTION"]);
+});
+
+test("Fable A-1 on #23: a transfer whose send failed without a hash is never called 'not sent', on both paths", async () => {
+  for (const inSequence of [true, false]) {
+    const e = await rig({ inSequence, sendFails: (i) => (i === 1 ? new Error("socket hang up") : undefined) }).client.execute("r_test", artifact(), request).catch((x) => x);
+    assert.ok(e instanceof RectaSendUnknownError);
+    assert.equal(e.transferSent, "UNKNOWN");
+    assert.doesNotMatch(e.message, /was not sent/);
+    assert.match(e.message, /the transfer may have moved funds/);
+  }
+  // In sequence, even a failed wait for the approval's receipt leaves the transfer UNKNOWN (it was handed over too).
+  const seq = await rig({ waitThrows: (i) => i === 0 }).client.execute("r_test", artifact(), request).catch((x) => x);
+  assert.equal(seq.transferSent, "UNKNOWN");
+  // Step by step, only the approval's own send or wait failing makes it NO.
+  for (const o of [{ sendFails: (i) => (i === 0 ? new Error("x") : undefined) }, { waitThrows: (i) => i === 0 }]) {
+    const e = await rig({ inSequence: false, ...o }).client.execute("r_test", artifact(), request).catch((x) => x);
+    assert.equal(e.transferSent, "NO");
+  }
 });

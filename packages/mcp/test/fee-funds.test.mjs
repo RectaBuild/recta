@@ -164,6 +164,16 @@ test("recta_approve_fee: only with execution on, at most the operator's cap, the
   assert.equal(out.fee_funds.ready, true);
 });
 
+test("Fable M-B on #23: recta_approve_fee, a send without a hash or a wait that throws is SEND_UNKNOWN, with the hash when known", async () => {
+  const { f } = collectingRecta();
+  const throwing = wallet({ balanceUsdcAtomic: usdc(50), permit2AllowanceUsdcAtomic: usdc(1) });
+  throwing.signer.sendTransaction = async () => { throw new Error("socket hang up"); };
+  await assert.rejects(server(throwing, f).call("recta_approve_fee", { amount_usdc: "0.75" }), (e) => e.check === "transaction_unknown" && e.sentTxHashes.length === 0);
+  const waits = wallet({ balanceUsdcAtomic: usdc(50), permit2AllowanceUsdcAtomic: usdc(1) });
+  waits.chain.waitForSuccess = async () => { throw new Error("timeout"); };
+  await assert.rejects(server(waits, f).call("recta_approve_fee", { amount_usdc: "0.75" }), (e) => e.check === "transaction_unknown" && e.sentTxHashes.length === 1 && e.message.includes(e.sentTxHashes[0].hash));
+});
+
 test("tools/list: recta_fee_funds always; recta_approve_fee only with execution on", async () => {
   const names = async (allow) => (await server(wallet({}), collectingRecta().f, allow).handle({ jsonrpc: "2.0", id: 1, method: "tools/list" })).result.tools.map((t) => t.name);
   assert.ok((await names(false)).includes("recta_fee_funds"));

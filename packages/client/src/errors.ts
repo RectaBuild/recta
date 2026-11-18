@@ -1,8 +1,31 @@
-/** A local check refused to sign or send: nothing was signed or sent. `check` names the check. */
+/**
+ * A local check refused, or a transaction did not end as expected. `check` names it. Read it before acting:
+ * - `transaction_unknown` (a RectaSendUnknownError): a transaction may have been sent. Look `sentTxHashes` (or, with
+ *   none, the account's latest transactions) up on chain before sending anything again, by Recta or any other route.
+ * - `transaction_failed`: the named transaction was mined and reverted.
+ * - a wallet's own checks (`wallet_*`, from the MetaMask signer) say in their message what was sent.
+ * - every other check: nothing was signed or sent.
+ */
 export class RectaCheckError extends Error {
   override readonly name: string = "RectaCheckError";
   constructor(readonly check: string, message: string) {
     super(`${check}: ${message}`);
+  }
+}
+
+/** A send whose outcome is not known (owner rule 2026-11-11: UNKNOWN, never FAILED): what was already sent, as data. */
+export class RectaSendUnknownError extends RectaCheckError {
+  override readonly name: string = "RectaSendUnknownError";
+  constructor(
+    message: string,
+    /** The evaluation this send belongs to, when it belongs to one. */
+    readonly resultId: string | undefined,
+    /** Every transaction hash already sent, in order; empty when none came back. */
+    readonly sentTxHashes: readonly { readonly role: string; readonly chainId: number; readonly hash: `0x${string}` }[],
+    /** "NO" only when the transfer was certainly never asked for; "UNKNOWN" when it may have left (no hash for it). */
+    readonly transferSent: "NO" | "UNKNOWN" = "UNKNOWN",
+  ) {
+    super("transaction_unknown", message);
   }
 }
 

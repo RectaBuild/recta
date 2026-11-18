@@ -5,5 +5,5 @@ export { checkExecutionArtifact, pinnedRouteOf, type CheckedArtifact, type Evalu
 export { PINNED_ROUTES, type PinnedRoute } from "./pinned-routes.js";
 export { parseWalletPolicy, type WalletPolicy, type WalletPolicyNetwork } from "./policy.js";
 export { viemSigner, viemChainReader, cdpSigner, smartAccountSigner, DEFAULT_USER_OPERATION_OVERHEAD_GAS, CDP_SEND_NETWORKS, type CdpEvmAccountLike, type CdpSendNetwork, type RectaSigner, type RectaChainReader, type RectaTransaction, type RectaTypedData } from "./signer.js";
-export { RectaCheckError, RectaHttpError, RectaDebtError } from "./errors.js";
+export { RectaCheckError, RectaHttpError, RectaDebtError, RectaSendUnknownError } from "./errors.js";
 export * as pins from "./constants.js";

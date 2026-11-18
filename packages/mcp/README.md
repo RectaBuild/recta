@@ -105,6 +105,11 @@ sets the allowance with `recta_approve_fee`; each collected fee lowers it, so ap
 `recta_fee_funds` reports it short. A route that starts from USDC on Base needs the transfer plus the fee in the
 balance: the transfer leaves first, and `recta_execute` checks again right before sending.
 
+If `recta_execute` or `recta_approve_fee` answers `{ "error": "SEND_UNKNOWN" }`, a transaction may have been sent and
+its outcome is not known: the answer carries `result_id`, `sent_tx_hashes` and `transfer_sent` (`NO` only when the
+transfer was certainly never sent). Look those hashes (or, with none, the wallet's latest transactions) up on chain before
+sending anything again, by Recta or any other route, and report the transfer with `recta_report` if it succeeded.
+
 The saving is measured against `baseline_provider`: the route your agent would use without Recta. Declare the one it
 really uses. If your agent bridges through LI.FI (its public API or an aggregator built on it), declare `lifi`
 wherever the fit check (`GET /v1/golden-corridor/fit`) lists it in `declarable_baselines`; it is refused with

@@ -4,6 +4,7 @@ import { formatUserOperationRequest, type BundlerClient, type SmartAccount } fro
 import { toAccount } from "viem/accounts";
 import { FEE_CHAIN_ID, PERMIT2, USDC_BASE } from "./constants.js";
 import { ERC20_READ_ABI, safeErrorText, type FeeFunds } from "./funds.js";
+import { RectaCheckError } from "./errors.js";
 
 /** One EIP-1559 transaction of an execution artifact, as this package asks a signer to send it. */
 export interface RectaTransaction {
@@ -91,7 +92,12 @@ export function viemSigner(args: {
       const chainId = txs[0]?.chainId;
       if (chainId === undefined || txs.some((t) => t.chainId !== chainId)) throw new Error("sendInSequence sends transactions of one chain");
       const client = args.walletClientFor(chainId);
-      const first = Number(BigInt((await client.request({ method: "eth_getTransactionCount", params: [account.address, "pending"] } as never)) as string));
+      let first: number;
+      try {
+        first = Number(BigInt((await client.request({ method: "eth_getTransactionCount", params: [account.address, "pending"] } as never)) as string));
+      } catch (e) {
+        throw new RectaCheckError("wallet_nonce", `could not read the nonce of ${account.address} on chain ${chainId} (${safeErrorText(e).slice(0, 200)}): nothing was sent`);
+      }
       for (const [i, tx] of txs.entries()) onSent(i, await sendWith(client, account, tx, first + i));
     },
   };
