@@ -232,22 +232,42 @@ export function createRectaClient(options: RectaClientOptions) {
     return checkExecutionArtifact(artifact, { resultId: resultIdOf(resultId), request, limits: { signer: payer, nowUnix: nowUnix(), maxNativeValueWei: limits.maxNativeValueWei, minOutputBps: limits.minOutputBps } });
   }
 
-  /** Step 3: checks, then sends the transactions in order, each mined successfully before the next. */
+  /** Step 3: checks, then sends the transactions in order without waiting in between, and waits until each is mined. */
   async function execute(resultId: string, artifact: unknown, request: EvaluationRequestView): Promise<{ readonly approvalTxHash?: Hex; readonly originTxHash: Hex }> {
     // The last moment before anything is sent: with a fee authorized for this decision, the payer must still hold it
     // in USDC on Base (plus the transfer itself when it starts from Base USDC) with the Permit2 allowance for it.
     const fee = feeAmounts.get(resultIdOf(resultId));
     if (fee !== undefined) assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), fee, routeReserveOf(request)));
     const checked = await check(resultId, artifact, request);
-    let approvalTxHash: Hex | undefined;
+    if (!checked.transactions.some((t) => t.role === "EXECUTION")) throw new RectaCheckError("transaction_order", "the artifact has no execution");
+    // Recta's saving holds for a short horizon after its anchor block (60 s). On Ethereum, waiting for the approval's
+    // receipt before sending the deposit took the deposit past it (Recta BIT-OPS-180: mined 72 s after the anchor, so
+    // nothing accrued). The transactions now leave one after another without waiting, on consecutive nonces, and are
+    // then awaited in order. An approval that reverts makes its deposit revert too (no allowance): only gas is spent.
+    const sent: { readonly role: "APPROVAL" | "EXECUTION"; readonly chainId: number; readonly hash: Hex }[] = [];
     for (const tx of checked.transactions) {
       const { role, ...send } = tx;
-      const hash = await signer.sendTransaction(send);
-      if (!(await chain.waitForSuccess(tx.chainId, hash))) throw new RectaCheckError("transaction_failed", `${role} transaction ${hash} reverted`);
-      if (role === "APPROVAL") approvalTxHash = hash;
-      else return { ...(approvalTxHash === undefined ? {} : { approvalTxHash }), originTxHash: hash };
+      let hash: Hex;
+      try {
+        hash = await signer.sendTransaction(send);
+      } catch (e) {
+        // A wallet's own refusal (its checks, its journal) stays as it is; otherwise the hashes already sent are named.
+        if (sent.length === 0 || e instanceof RectaCheckError) throw e;
+        throw new RectaCheckError("transaction_unknown", `${sent.map((s) => `${s.role} ${s.hash}`).join(", ")} sent, then sending the ${role} failed (${safeErrorText(e).slice(0, 200)}): it may still have been broadcast, so look the account up on chain before sending anything again`);
+      }
+      sent.push({ role, chainId: tx.chainId, hash });
     }
-    throw new RectaCheckError("transaction_order", "the artifact has no execution");
+    const execution = sent.find((s) => s.role === "EXECUTION")!;
+    for (const s of sent) {
+      if (await chain.waitForSuccess(s.chainId, s.hash)) continue;
+      if (s.role === "EXECUTION") throw new RectaCheckError("transaction_failed", `EXECUTION transaction ${s.hash} reverted`);
+      // The deposit was already sent: say what became of it, so a deposit that moved funds can still be reported.
+      const moved = await chain.waitForSuccess(execution.chainId, execution.hash);
+      throw new RectaCheckError("transaction_failed", `APPROVAL transaction ${s.hash} reverted; the EXECUTION ${execution.hash} was already sent and ${moved ? "SUCCEEDED (report it with recta.report)" : "reverted too: nothing was moved"}`);
+    }
+    const approvals = sent.filter((s) => s.role === "APPROVAL");
+    const approvalTxHash = approvals.length === 0 ? undefined : approvals[approvals.length - 1]!.hash;
+    return { ...(approvalTxHash === undefined ? {} : { approvalTxHash }), originTxHash: execution.hash };
   }
 
   /**

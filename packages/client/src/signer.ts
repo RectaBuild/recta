@@ -74,15 +74,32 @@ export function viemSigner(args: {
       sendTransaction: (tx) => sendWith(args.walletClientFor(tx.chainId), account, tx),
     };
   }
+  // A local key: this signer picks the nonce. The node's pending count may not show a transaction sent a moment ago
+  // (another node behind the same RPC URL), and the approval and the deposit now leave back to back, so the nonce after
+  // the last one this signer sent is used while it is newer than the node's count (for NONCE_MEMORY_MS at most, so a
+  // transaction the network dropped cannot leave a gap for long).
+  const sentNonces = new Map<number, { readonly next: number; readonly at: number }>();
   return {
     address: account.address,
     signMessage: (message) => account.signMessage!({ message }),
     signTypedData: (td) => account.signTypedData!(td as never),
-    sendTransaction: (tx) => sendWith(args.walletClientFor(tx.chainId), account, tx),
+    sendTransaction: async (tx) => {
+      const client = args.walletClientFor(tx.chainId);
+      const counted = Number(BigInt((await client.request({ method: "eth_getTransactionCount", params: [account.address, "pending"] } as never)) as string));
+      const last = sentNonces.get(tx.chainId);
+      sentNonces.delete(tx.chainId);
+      const nonce = last !== undefined && Date.now() - last.at < NONCE_MEMORY_MS && last.next > counted ? last.next : counted;
+      const hash = await sendWith(client, account, tx, nonce);
+      sentNonces.set(tx.chainId, { next: nonce + 1, at: Date.now() });
+      return hash;
+    },
   };
 }
 
-async function sendWith(client: WalletClient<Transport, Chain | undefined, Account | undefined>, account: Account, tx: RectaTransaction): Promise<Hex> {
+/** How long a local-key viemSigner trusts its own next nonce over the node's pending count. */
+const NONCE_MEMORY_MS = 120_000;
+
+async function sendWith(client: WalletClient<Transport, Chain | undefined, Account | undefined>, account: Account, tx: RectaTransaction, nonce?: number): Promise<Hex> {
   const chainId = await client.getChainId();
   if (chainId !== tx.chainId) throw new Error(`walletClientFor(${tx.chainId}) returned a client on chain ${chainId}`);
   return client.sendTransaction({
@@ -95,6 +112,7 @@ async function sendWith(client: WalletClient<Transport, Chain | undefined, Accou
     maxFeePerGas: tx.maxFeePerGas,
     maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
     type: "eip1559",
+    ...(nonce === undefined ? {} : { nonce }),
   } as never);
 }
 
