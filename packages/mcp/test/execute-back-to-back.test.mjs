@@ -1,4 +1,4 @@
-// Recta BIT-OPS-180: a decision's saving holds for 60 s after its anchor block. On Ethereum, waiting for the approval's
+// Recta BIT-OPS-182: a decision's saving holds for 60 s after its anchor block. On Ethereum, waiting for the approval's
 // receipt before sending the deposit took the deposit past it (mined 72 s after the anchor: nothing accrued). With a
 // signer that can (sendInSequence: viemSigner with a local key), execute() sends the approval and the deposit back to
 // back on consecutive nonces and only then waits; any other signer (MetaMask, smart account, CDP) waits as before.

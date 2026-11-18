@@ -254,7 +254,7 @@ export function createRectaClient(options: RectaClientOptions) {
 
   /**
    * Recta's saving holds for a short horizon after its anchor block (60 s). On Ethereum, waiting for the approval's
-   * receipt before sending the deposit took the deposit past it (Recta BIT-OPS-180: mined 72 s after the anchor, nothing
+   * receipt before sending the deposit took the deposit past it (Recta BIT-OPS-182: mined 72 s after the anchor, nothing
    * accrued). A signer that can (`sendInSequence`: a local key) sends the approval and the deposit one after another on
    * consecutive nonces, and they are awaited only then. From the first hash on, every failure names every hash sent:
    * whether the deposit moved funds is then UNKNOWN until the chain says so, and nothing may be sent again before.
