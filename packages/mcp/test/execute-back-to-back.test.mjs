@@ -150,3 +150,31 @@ test("viemSigner (local key): sendInSequence reads the nonce once and uses conse
   assert.equal(sent.at(-1), undefined);
   await assert.rejects(signer.sendInSequence([tx, { ...tx, chainId: 1 }], () => {}), /one chain/);
 });
+
+// Fable M-3 on #22 (owner rule 2026-11-11): a send that failed without a hash is UNKNOWN, never a plain failure.
+test("M-3: a first send that fails without a hash is UNKNOWN, on both paths; a wallet's own RectaCheckError passes unchanged", async () => {
+  for (const inSequence of [true, false]) {
+    const { client } = rig({ inSequence, sendFails: (i) => (i === 0 ? new Error("socket hang up https://rpc.example/KEY") : undefined) });
+    await assert.rejects(client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.startsWith("transaction_unknown: No transaction hash came back for r_test") && /its nonce/.test(e.message) && !e.message.includes("KEY"));
+    const own = new RectaCheckError("wallet_send_unknown", "x");
+    await assert.rejects(rig({ inSequence, sendFails: (i) => (i === 0 ? own : undefined) }).client.execute("r_test", artifact(), request), (e) => e === own);
+  }
+  const one = artifact();
+  one.transactions = one.transactions.slice(1);
+  await assert.rejects(rig({ sendFails: () => new Error("boom") }).client.execute("r_test", one, request), (e) => e.check === "transaction_unknown");
+});
+
+test("M-3: waiting step by step, a wait that throws or a later send that fails is UNKNOWN with every hash sent", async () => {
+  const waits = rig({ inSequence: false, waitThrows: (i) => i === 0 });
+  await assert.rejects(waits.client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.includes(`APPROVAL ${HASH(0)} sent for r_test`));
+  assert.deepEqual(waits.log, [`send 0 ${APPROVE_TO}`, "wait 0"]);
+  const second = rig({ inSequence: false, sendFails: (i) => (i === 1 ? new Error("boom") : undefined) });
+  await assert.rejects(second.client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.includes(`APPROVAL ${HASH(0)} sent for r_test, then sending the EXECUTION failed without a hash`));
+});
+
+test("viemSigner: a nonce that cannot be read stops before anything is sent (wallet_nonce, not UNKNOWN)", async () => {
+  const wallet = { chain: undefined, getChainId: async () => 8453, request: async () => { throw new Error("down https://rpc.example/KEY"); }, sendTransaction: async () => assert.fail("sent") };
+  const signer = viemSigner({ account, walletClientFor: () => wallet });
+  const tx = { chainId: 8453, to: SPOKE, data: "0x", value: 0n, gas: 21000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n };
+  await assert.rejects(signer.sendInSequence([tx, tx], () => {}), (e) => e.check === "wallet_nonce" && /nothing was sent/.test(e.message) && !e.message.includes("KEY"));
+});

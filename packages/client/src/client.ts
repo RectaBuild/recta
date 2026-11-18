@@ -95,6 +95,15 @@ export type FeeOutcome =
   | { readonly kind: "AUTHORIZED"; readonly amountUsdcAtomic: bigint; readonly signature: Hex }
   | { readonly kind: "DRY_RUN"; readonly amountUsdcAtomic: bigint; readonly typedData: RectaTypedData; readonly funds: FeeReadiness | null; readonly fundsError?: string };
 
+type SentTransaction = { readonly role: "APPROVAL" | "EXECUTION"; readonly chainId: number; readonly hash: Hex };
+
+/** A send whose outcome is not known (owner rule 2026-11-11): every hash already sent and the result_id, and the
+ *  instruction to look them up (and the account's nonce) before anything is sent again. */
+function unknownSend(resultId: string, sent: readonly SentTransaction[], what: string): RectaCheckError {
+  const hashes = sent.length === 0 ? "No transaction hash came back" : `${sent.map((s) => `${s.role} ${s.hash}`).join(", ")} sent`;
+  return new RectaCheckError("transaction_unknown", `${hashes} for ${resultId}, then ${what}: the transfer may have moved funds, so look ${sent.length === 0 ? "the account's latest transactions (its nonce)" : "these hashes"} up on chain (and report the EXECUTION if it succeeded) before sending anything again`);
+}
+
 /**
  * Recta's flow for an agent that holds its own EOA or smart account (on Base): evaluate → authorizeFee → execute → report. Every step can be
  * called alone. Nothing is signed or sent before this package's own checks pass (see `checkFeePermit` and
@@ -242,10 +251,26 @@ export function createRectaClient(options: RectaClientOptions) {
     const checked = await check(resultId, artifact, request);
     if (signer.sendInSequence !== undefined && checked.transactions.length > 1) return executeInSequence(resultId, checked, signer.sendInSequence.bind(signer));
     let approvalTxHash: Hex | undefined;
+    const sent: SentTransaction[] = [];
     for (const tx of checked.transactions) {
       const { role, ...send } = tx;
-      const hash = await signer.sendTransaction(send);
-      if (!(await chain.waitForSuccess(tx.chainId, hash))) throw new RectaCheckError("transaction_failed", `${role} transaction ${hash} reverted`);
+      let hash: Hex;
+      try {
+        hash = await signer.sendTransaction(send);
+      } catch (e) {
+        // Fable M-3 on #22 (owner rule 2026-11-11): a send that failed without a hash may still have been broadcast.
+        // A wallet's own RectaCheckError (MetaMask's journal, a smart account) already says what it knows.
+        if (e instanceof RectaCheckError) throw e;
+        throw unknownSend(resultId, sent, `sending the ${role} failed without a hash (${safeErrorText(e).slice(0, 200)})`);
+      }
+      sent.push({ role, chainId: tx.chainId, hash });
+      let ok: boolean;
+      try {
+        ok = await chain.waitForSuccess(tx.chainId, hash);
+      } catch (e) {
+        throw unknownSend(resultId, sent, `waiting for a receipt failed (${safeErrorText(e).slice(0, 200)})`);
+      }
+      if (!ok) throw new RectaCheckError("transaction_failed", `${role} transaction ${hash} reverted${role === "APPROVAL" ? ": nothing else was sent" : ": nothing was moved by it"}`);
       if (role === "APPROVAL") approvalTxHash = hash;
       else return { ...(approvalTxHash === undefined ? {} : { approvalTxHash }), originTxHash: hash };
     }
@@ -260,15 +285,14 @@ export function createRectaClient(options: RectaClientOptions) {
    * whether the deposit moved funds is then UNKNOWN until the chain says so, and nothing may be sent again before.
    */
   async function executeInSequence(resultId: string, checked: CheckedArtifact, sendInSequence: NonNullable<RectaSigner["sendInSequence"]>): Promise<{ readonly approvalTxHash?: Hex; readonly originTxHash: Hex }> {
-    const sent: { readonly role: "APPROVAL" | "EXECUTION"; readonly chainId: number; readonly hash: Hex }[] = [];
-    const unknown = (what: string): RectaCheckError =>
-      new RectaCheckError("transaction_unknown", `${sent.map((s) => `${s.role} ${s.hash}`).join(", ")} sent for ${resultId}, then ${what}: the transfer may have moved funds, so look these hashes up on chain (and report the EXECUTION if it succeeded) before sending anything again`);
+    const sent: SentTransaction[] = [];
+    const unknown = (what: string): RectaCheckError => unknownSend(resultId, sent, what);
     const roles = checked.transactions.map((t) => t.role);
     try {
       await sendInSequence(checked.transactions.map(({ role: _role, ...send }) => send), (i, hash) => { sent.push({ role: roles[i]!, chainId: checked.transactions[i]!.chainId, hash }); });
     } catch (e) {
-      if (sent.length === 0) throw e;
-      throw unknown(`sending the next transaction failed (${safeErrorText(e).slice(0, 200)})`);
+      if (e instanceof RectaCheckError && sent.length === 0) throw e;
+      throw unknown(`sending ${sent.length === 0 ? "the first" : "the next"} transaction failed without a hash (${safeErrorText(e).slice(0, 200)})`);
     }
     const execution = sent.find((s) => s.role === "EXECUTION");
     if (execution === undefined || sent.length !== checked.transactions.length) throw unknown("the signer stopped before the transfer");
