@@ -1,7 +1,7 @@
 import { keccak256, type Hex } from "viem";
 import { checkExecutionArtifact, type CheckedArtifact, type EvaluationRequestView } from "./artifact.js";
 import { FEE_CHAIN_ID, ISSUED_AT_HEADER, PATHS, RECTA_ORIGIN, SIGNATURE_HEADER, SIGNED_REQUEST_PREFIX, SIGNER_CHAIN_HEADER, SIGNER_HEADER, SMART_ACCOUNT_SIGNED_REQUEST_PREFIX, USER_AGENT } from "./constants.js";
-import { RectaCheckError, RectaDebtError, RectaHttpError } from "./errors.js";
+import { RectaCheckError, RectaDebtError, RectaHttpError, RectaSendUnknownError } from "./errors.js";
 import { checkFeePermit } from "./fee.js";
 import { assertFeeReady, feeReadiness, permit2ApprovalTransaction, routeReserveOf, safeErrorText, type FeeReadiness, type Permit2Approval } from "./funds.js";
 import { parseWalletPolicy } from "./policy.js";
@@ -99,9 +99,11 @@ type SentTransaction = { readonly role: "APPROVAL" | "EXECUTION"; readonly chain
 
 /** A send whose outcome is not known (owner rule 2026-11-11): every hash already sent and the result_id, and the
  *  instruction to look them up (and the account's nonce) before anything is sent again. */
-function unknownSend(resultId: string, sent: readonly SentTransaction[], what: string): RectaCheckError {
+function unknownSend(resultId: string, sent: readonly SentTransaction[], what: string): RectaSendUnknownError {
   const hashes = sent.length === 0 ? "No transaction hash came back" : `${sent.map((s) => `${s.role} ${s.hash}`).join(", ")} sent`;
-  return new RectaCheckError("transaction_unknown", `${hashes} for ${resultId}, then ${what}: the transfer may have moved funds, so look ${sent.length === 0 ? "the account's latest transactions (its nonce)" : "these hashes"} up on chain (and report the EXECUTION if it succeeded) before sending anything again`);
+  const transferSent = sent.some((s) => s.role === "EXECUTION");
+  const may = sent.length > 0 && !transferSent ? "the transfer was not sent, but the approval's outcome is not known" : "the transfer may have moved funds";
+  return new RectaSendUnknownError(`${hashes} for ${resultId}, then ${what}: ${may}, so look ${sent.length === 0 ? "the account's latest transactions (its nonce)" : "these hashes"} up on chain (and report the EXECUTION if it succeeded) before sending anything again`, resultId, sent.map((s) => ({ ...s })));
 }
 
 /**
@@ -259,7 +261,8 @@ export function createRectaClient(options: RectaClientOptions) {
         hash = await signer.sendTransaction(send);
       } catch (e) {
         // Fable M-3 on #22 (owner rule 2026-11-11): a send that failed without a hash may still have been broadcast.
-        // A wallet's own RectaCheckError (MetaMask's journal, a smart account) already says what it knows.
+        // A wallet's own RectaCheckError (MetaMask's journal and recovery, which key on its own checks) passes as it is:
+        // that wallet waits inside its own send, so a hash before this one is already mined and in its journal.
         if (e instanceof RectaCheckError) throw e;
         throw unknownSend(resultId, sent, `sending the ${role} failed without a hash (${safeErrorText(e).slice(0, 200)})`);
       }
@@ -286,7 +289,7 @@ export function createRectaClient(options: RectaClientOptions) {
    */
   async function executeInSequence(resultId: string, checked: CheckedArtifact, sendInSequence: NonNullable<RectaSigner["sendInSequence"]>): Promise<{ readonly approvalTxHash?: Hex; readonly originTxHash: Hex }> {
     const sent: SentTransaction[] = [];
-    const unknown = (what: string): RectaCheckError => unknownSend(resultId, sent, what);
+    const unknown = (what: string): RectaSendUnknownError => unknownSend(resultId, sent, what);
     const roles = checked.transactions.map((t) => t.role);
     try {
       await sendInSequence(checked.transactions.map(({ role: _role, ...send }) => send), (i, hash) => { sent.push({ role: roles[i]!, chainId: checked.transactions[i]!.chainId, hash }); });

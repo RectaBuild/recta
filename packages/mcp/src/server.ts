@@ -1,4 +1,4 @@
-import { createRectaClient, safeErrorText, RectaCheckError, RectaDebtError, RectaHttpError, pins, type RectaChainReader, type RectaClient, type RectaSigner } from "@recta/client";
+import { createRectaClient, safeErrorText, RectaCheckError, RectaDebtError, RectaHttpError, RectaSendUnknownError, pins, type RectaChainReader, type RectaClient, type RectaSigner } from "@recta/client";
 
 /**
  * A local MCP server (stdio, JSON-RPC 2.0) that runs Recta's flow with a key that stays on the agent's machine. It is
@@ -292,8 +292,21 @@ export function createLocalServer(options: LocalServerOptions) {
         const [whole, frac = ""] = (raw ?? "").split(".");
         const approval = client.feeApproval(raw === undefined ? undefined : BigInt(whole!) * 1_000_000n + BigInt(frac.padEnd(6, "0")));
         const [maxFeePerGas, maxPriorityFeePerGas] = await options.gasCapsFor("base");
-        const hash = await options.signer.sendTransaction({ chainId: approval.chainId, to: approval.to, data: approval.data, value: 0n, gas: APPROVE_GAS, maxFeePerGas, maxPriorityFeePerGas });
-        if (!(await options.chain.waitForSuccess(approval.chainId, hash))) throw new RectaCheckError("transaction_failed", `approval ${hash} reverted`);
+        // Fable M-B on #23 (owner rule 2026-11-11): a send without a hash, or a wait that fails, is UNKNOWN with the hash.
+        let hash: `0x${string}`;
+        try {
+          hash = await options.signer.sendTransaction({ chainId: approval.chainId, to: approval.to, data: approval.data, value: 0n, gas: APPROVE_GAS, maxFeePerGas, maxPriorityFeePerGas });
+        } catch (e) {
+          if (e instanceof RectaCheckError) throw e;
+          throw new RectaSendUnknownError(`sending the Permit2 approval failed without a hash (${safeErrorText(e).slice(0, 200)}): it may have been broadcast, so look the account's latest transactions on Base up before approving again`, undefined, []);
+        }
+        let mined: boolean;
+        try {
+          mined = await options.chain.waitForSuccess(approval.chainId, hash);
+        } catch (e) {
+          throw new RectaSendUnknownError(`the Permit2 approval ${hash} was sent, then waiting for its receipt failed (${safeErrorText(e).slice(0, 200)}): look it up on chain before approving again`, undefined, [{ role: "APPROVAL", chainId: approval.chainId, hash }]);
+        }
+        if (!mined) throw new RectaCheckError("transaction_failed", `approval ${hash} reverted`);
         return { approved_usdc_atomic: approval.amountUsdcAtomic.toString(), tx_hash: hash, fee_funds: json(await client.feeFunds()) };
       }
       case "recta_pay_debt": {
@@ -336,7 +349,7 @@ export function createLocalServer(options: LocalServerOptions) {
         try {
           return ok({ content: text(await call(name, args)), isError: false });
         } catch (e) {
-          const body = e instanceof RectaDebtError ? { error: "DEBT", debt_offer: e.offer } : e instanceof RectaHttpError ? { error: "HTTP", status: e.status, reason_code: e.reasonCode, body: e.body } : e instanceof RectaCheckError ? { error: "CHECK_FAILED", check: e.check, message: e.message } : { error: "FAILED", message: safeErrorText(e) };
+          const body = e instanceof RectaDebtError ? { error: "DEBT", debt_offer: e.offer } : e instanceof RectaHttpError ? { error: "HTTP", status: e.status, reason_code: e.reasonCode, body: e.body } : e instanceof RectaSendUnknownError ? { error: "SEND_UNKNOWN", check: e.check, message: e.message, ...(e.resultId === undefined ? {} : { result_id: e.resultId }), sent_tx_hashes: e.sentTxHashes } : e instanceof RectaCheckError ? { error: "CHECK_FAILED", check: e.check, message: e.message } : { error: "FAILED", message: safeErrorText(e) };
           return ok({ content: text(body), isError: true });
         }
       }

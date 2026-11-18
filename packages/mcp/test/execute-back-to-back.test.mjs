@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { encodeFunctionData, pad, parseAbi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { createRectaClient, pins, RectaCheckError, viemSigner } from "@recta/client";
+import { createRectaClient, pins, RectaCheckError, RectaSendUnknownError, viemSigner } from "@recta/client";
 
 const policy = readFileSync(new URL("./wallet-policy.fixture.json", import.meta.url), "utf8");
 const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
@@ -177,4 +177,25 @@ test("viemSigner: a nonce that cannot be read stops before anything is sent (wal
   const signer = viemSigner({ account, walletClientFor: () => wallet });
   const tx = { chainId: 8453, to: SPOKE, data: "0x", value: 0n, gas: 21000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n };
   await assert.rejects(signer.sendInSequence([tx, tx], () => {}), (e) => e.check === "wallet_nonce" && /nothing was sent/.test(e.message) && !e.message.includes("KEY"));
+});
+
+test("Fable M-A on #23: an UNKNOWN send is a RectaSendUnknownError with the result_id and the hashes as data", async () => {
+  const { client } = rig({ inSequence: false, waitThrows: (i) => i === 1 });
+  const e = await client.execute("r_test", artifact(), request).catch((x) => x);
+  assert.ok(e instanceof RectaSendUnknownError);
+  assert.equal(e.check, "transaction_unknown");
+  assert.equal(e.resultId, "r_test");
+  assert.deepEqual(e.sentTxHashes.map((s) => [s.role, s.hash]), [["APPROVAL", HASH(0)], ["EXECUTION", HASH(1)]]);
+  // Only an approval left: the message says the transfer was not sent.
+  const onlyApproval = await rig({ inSequence: false, waitThrows: (i) => i === 0 }).client.execute("r_test", artifact(), request).catch((x) => x);
+  assert.match(onlyApproval.message, /the transfer was not sent/);
+  // Step by step, a wallet's own RectaCheckError passes unchanged (MetaMask's journal holds its hashes).
+  const own = new RectaCheckError("wallet_send_unknown", "x");
+  assert.equal(await rig({ inSequence: false, sendFails: (i) => (i === 1 ? own : undefined) }).client.execute("r_test", artifact(), request).catch((x) => x), own);
+  // A deposit alone whose wait throws.
+  const one = artifact();
+  one.transactions = one.transactions.slice(1);
+  const solo = await rig({ waitThrows: () => true }).client.execute("r_test", one, request).catch((x) => x);
+  assert.ok(solo instanceof RectaSendUnknownError);
+  assert.deepEqual(solo.sentTxHashes.map((s) => s.role), ["EXECUTION"]);
 });

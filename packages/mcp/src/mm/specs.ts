@@ -1,6 +1,6 @@
 import { keccak256, type Hex } from "viem";
 import { randomUUID } from "node:crypto";
-import { RectaCheckError } from "@recta/client";
+import { RectaCheckError, RectaSendUnknownError } from "@recta/client";
 import { configFromEnv, networkChainIds } from "../index.js";
 import { journalDir, SendJournal, unresolved, type JournalAttempt } from "./journal.js";
 import { metaMaskRectaServer, metaMaskSigner, selectedMetaMaskAddress, type MetaMaskPublicClientFor, type MetaMaskSentTransaction, type MetaMaskWalletExecutor, type MetaMaskWalletStateLike } from "../metamask.js";
@@ -112,7 +112,9 @@ function asCommands(preview: Record<string, unknown>): Record<string, unknown> {
 /** An error as the MCP server would answer it. */
 function bodyOf(e: unknown): Record<string, unknown> {
   if (e instanceof RectaToolError) return e.body;
-  if (e instanceof RectaCheckError) return { error: "CHECK_FAILED", check: e.check, message: e.message.startsWith(`${e.check}: `) ? e.message.slice(e.check.length + 2) : e.message };
+  const message = e instanceof RectaCheckError && e.message.startsWith(`${e.check}: `) ? e.message.slice(e.check.length + 2) : e instanceof Error ? e.message : "";
+  if (e instanceof RectaSendUnknownError) return { error: "SEND_UNKNOWN", check: e.check, message, ...(e.resultId === undefined ? {} : { result_id: e.resultId }), sent_tx_hashes: e.sentTxHashes };
+  if (e instanceof RectaCheckError) return { error: "CHECK_FAILED", check: e.check, message };
   return { error: "FAILED", message: e instanceof Error ? e.message.slice(0, 500) : String(e).slice(0, 500) };
 }
 

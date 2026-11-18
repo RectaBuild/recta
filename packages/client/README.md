@@ -177,6 +177,19 @@ Since 0.1.4 `RectaChainReader` requires `readFeeFunds`; `createRectaClient` refu
 A custom `RectaChainReader` must implement `readFeeFunds(owner)`; when it cannot read Base it must throw, and the permit
 is then not signed (a dry run reports `funds: null` and the reason).
 
+## When a send goes wrong
+
+`execute()` sends the route's transactions in order. With a local key (`viemSigner`), the approval and the transfer
+leave back to back on consecutive nonces, so they fit in Recta's 60-second window even on Ethereum; other wallets wait
+for each receipt. Errors say what happened:
+
+- `RectaSendUnknownError` (`check` `transaction_unknown`): a transaction may have been sent and its outcome is not
+  known. `sentTxHashes` lists every hash already sent, `resultId` the evaluation. Look them up on chain (with no hash,
+  the account's latest transactions) before sending anything again, by Recta or any other route. If the transfer
+  succeeded, report it with `report(resultId, originTxHash)`.
+- `RectaCheckError` `transaction_failed`: the named transaction was mined and reverted.
+- Any other `RectaCheckError`: nothing was signed or sent.
+
 ## What is checked before signing
 
 **Pins.** The package carries Recta's fee addresses in its own code: Permit2, x402's `upto` proxy, USDC on Base,
