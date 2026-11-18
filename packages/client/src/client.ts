@@ -99,11 +99,12 @@ type SentTransaction = { readonly role: "APPROVAL" | "EXECUTION"; readonly chain
 
 /** A send whose outcome is not known (owner rule 2026-11-11): every hash already sent and the result_id, and the
  *  instruction to look them up (and the account's nonce) before anything is sent again. */
-function unknownSend(resultId: string, sent: readonly SentTransaction[], what: string): RectaSendUnknownError {
+function unknownSend(resultId: string, sent: readonly SentTransaction[], what: string, transferSent: "NO" | "UNKNOWN"): RectaSendUnknownError {
   const hashes = sent.length === 0 ? "No transaction hash came back" : `${sent.map((s) => `${s.role} ${s.hash}`).join(", ")} sent`;
-  const transferSent = sent.some((s) => s.role === "EXECUTION");
-  const may = sent.length > 0 && !transferSent ? "the transfer was not sent, but the approval's outcome is not known" : "the transfer may have moved funds";
-  return new RectaSendUnknownError(`${hashes} for ${resultId}, then ${what}: ${may}, so look ${sent.length === 0 ? "the account's latest transactions (its nonce)" : "these hashes"} up on chain (and report the EXECUTION if it succeeded) before sending anything again`, resultId, sent.map((s) => ({ ...s })));
+  // Fable A-1 on #23: whether the transfer was attempted is said by the caller, never deduced from the hashes (a
+  // transfer whose send failed has no hash and may still have been broadcast).
+  const may = transferSent === "NO" ? "the transfer was not sent, but the approval's outcome is not known" : "the transfer may have moved funds";
+  return new RectaSendUnknownError(`${hashes} for ${resultId}, then ${what}: ${may}, so look ${sent.length === 0 ? "the account's latest transactions (its nonce)" : "these hashes"} up on chain (and report the EXECUTION if it succeeded) before sending anything again`, resultId, sent.map((s) => ({ ...s })), transferSent);
 }
 
 /**
@@ -264,14 +265,15 @@ export function createRectaClient(options: RectaClientOptions) {
         // A wallet's own RectaCheckError (MetaMask's journal and recovery, which key on its own checks) passes as it is:
         // that wallet waits inside its own send, so a hash before this one is already mined and in its journal.
         if (e instanceof RectaCheckError) throw e;
-        throw unknownSend(resultId, sent, `sending the ${role} failed without a hash (${safeErrorText(e).slice(0, 200)})`);
+        // An APPROVAL send that failed means the transfer was never asked for; anything else may have left.
+        throw unknownSend(resultId, sent, `sending the ${role} failed without a hash (${safeErrorText(e).slice(0, 200)})`, role === "APPROVAL" ? "NO" : "UNKNOWN");
       }
       sent.push({ role, chainId: tx.chainId, hash });
       let ok: boolean;
       try {
         ok = await chain.waitForSuccess(tx.chainId, hash);
       } catch (e) {
-        throw unknownSend(resultId, sent, `waiting for a receipt failed (${safeErrorText(e).slice(0, 200)})`);
+        throw unknownSend(resultId, sent, `waiting for a receipt failed (${safeErrorText(e).slice(0, 200)})`, role === "APPROVAL" ? "NO" : "UNKNOWN");
       }
       if (!ok) throw new RectaCheckError("transaction_failed", `${role} transaction ${hash} reverted${role === "APPROVAL" ? ": nothing else was sent" : ": nothing was moved by it"}`);
       if (role === "APPROVAL") approvalTxHash = hash;
@@ -289,7 +291,8 @@ export function createRectaClient(options: RectaClientOptions) {
    */
   async function executeInSequence(resultId: string, checked: CheckedArtifact, sendInSequence: NonNullable<RectaSigner["sendInSequence"]>): Promise<{ readonly approvalTxHash?: Hex; readonly originTxHash: Hex }> {
     const sent: SentTransaction[] = [];
-    const unknown = (what: string): RectaSendUnknownError => unknownSend(resultId, sent, what);
+    // In sequence the transfer may have been handed to the node at any point: never "NO".
+    const unknown = (what: string): RectaSendUnknownError => unknownSend(resultId, sent, what, "UNKNOWN");
     const roles = checked.transactions.map((t) => t.role);
     try {
       await sendInSequence(checked.transactions.map(({ role: _role, ...send }) => send), (i, hash) => { sent.push({ role: roles[i]!, chainId: checked.transactions[i]!.chainId, hash }); });

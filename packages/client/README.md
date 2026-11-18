@@ -184,10 +184,12 @@ leave back to back on consecutive nonces, so they fit in Recta's 60-second windo
 for each receipt. Errors say what happened:
 
 - `RectaSendUnknownError` (`check` `transaction_unknown`): a transaction may have been sent and its outcome is not
-  known. `sentTxHashes` lists every hash already sent, `resultId` the evaluation. Look them up on chain (with no hash,
+  known. `sentTxHashes` lists every hash already sent, `resultId` the evaluation, and `transferSent` is `NO` only when the
+  transfer was certainly never sent (otherwise `UNKNOWN`). Look them up on chain (with no hash,
   the account's latest transactions) before sending anything again, by Recta or any other route. If the transfer
   succeeded, report it with `report(resultId, originTxHash)`.
 - `RectaCheckError` `transaction_failed`: the named transaction was mined and reverted.
+- `wallet_*` checks (the MetaMask signer): their message says what was sent.
 - Any other `RectaCheckError`: nothing was signed or sent.
 
 ## What is checked before signing

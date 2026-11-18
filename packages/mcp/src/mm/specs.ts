@@ -113,7 +113,7 @@ function asCommands(preview: Record<string, unknown>): Record<string, unknown> {
 function bodyOf(e: unknown): Record<string, unknown> {
   if (e instanceof RectaToolError) return e.body;
   const message = e instanceof RectaCheckError && e.message.startsWith(`${e.check}: `) ? e.message.slice(e.check.length + 2) : e instanceof Error ? e.message : "";
-  if (e instanceof RectaSendUnknownError) return { error: "SEND_UNKNOWN", check: e.check, message, ...(e.resultId === undefined ? {} : { result_id: e.resultId }), sent_tx_hashes: e.sentTxHashes };
+  if (e instanceof RectaSendUnknownError) return { error: "SEND_UNKNOWN", check: e.check, message, ...(e.resultId === undefined ? {} : { result_id: e.resultId }), sent_tx_hashes: e.sentTxHashes.map((t) => t.hash), transfer_sent: e.transferSent };
   if (e instanceof RectaCheckError) return { error: "CHECK_FAILED", check: e.check, message };
   return { error: "FAILED", message: e instanceof Error ? e.message.slice(0, 500) : String(e).slice(0, 500) };
 }

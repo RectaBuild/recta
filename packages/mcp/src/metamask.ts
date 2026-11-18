@@ -92,6 +92,8 @@ export interface MetaMaskSentTransaction {
   readonly approval: boolean;
 }
 
+/** Used directly (without `mm` and its `onSent` journal), a `wallet_send_unknown` or `wallet_unconfirmed` error from
+ *  this signer carries no result_id or nonce: keep `onSent`'s records to recover, as `mm recta recover` does. */
 export function metaMaskSigner(args: {
   readonly address: Hex;
   readonly execute: MetaMaskWalletExecutor;

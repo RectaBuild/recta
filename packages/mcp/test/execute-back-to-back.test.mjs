@@ -199,3 +199,21 @@ test("Fable M-A on #23: an UNKNOWN send is a RectaSendUnknownError with the resu
   assert.ok(solo instanceof RectaSendUnknownError);
   assert.deepEqual(solo.sentTxHashes.map((s) => s.role), ["EXECUTION"]);
 });
+
+test("Fable A-1 on #23: a transfer whose send failed without a hash is never called 'not sent', on both paths", async () => {
+  for (const inSequence of [true, false]) {
+    const e = await rig({ inSequence, sendFails: (i) => (i === 1 ? new Error("socket hang up") : undefined) }).client.execute("r_test", artifact(), request).catch((x) => x);
+    assert.ok(e instanceof RectaSendUnknownError);
+    assert.equal(e.transferSent, "UNKNOWN");
+    assert.doesNotMatch(e.message, /was not sent/);
+    assert.match(e.message, /the transfer may have moved funds/);
+  }
+  // In sequence, even a failed wait for the approval's receipt leaves the transfer UNKNOWN (it was handed over too).
+  const seq = await rig({ waitThrows: (i) => i === 0 }).client.execute("r_test", artifact(), request).catch((x) => x);
+  assert.equal(seq.transferSent, "UNKNOWN");
+  // Step by step, only the approval's own send or wait failing makes it NO.
+  for (const o of [{ sendFails: (i) => (i === 0 ? new Error("x") : undefined) }, { waitThrows: (i) => i === 0 }]) {
+    const e = await rig({ inSequence: false, ...o }).client.execute("r_test", artifact(), request).catch((x) => x);
+    assert.equal(e.transferSent, "NO");
+  }
+});

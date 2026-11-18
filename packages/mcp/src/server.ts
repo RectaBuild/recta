@@ -349,7 +349,7 @@ export function createLocalServer(options: LocalServerOptions) {
         try {
           return ok({ content: text(await call(name, args)), isError: false });
         } catch (e) {
-          const body = e instanceof RectaDebtError ? { error: "DEBT", debt_offer: e.offer } : e instanceof RectaHttpError ? { error: "HTTP", status: e.status, reason_code: e.reasonCode, body: e.body } : e instanceof RectaSendUnknownError ? { error: "SEND_UNKNOWN", check: e.check, message: e.message, ...(e.resultId === undefined ? {} : { result_id: e.resultId }), sent_tx_hashes: e.sentTxHashes } : e instanceof RectaCheckError ? { error: "CHECK_FAILED", check: e.check, message: e.message } : { error: "FAILED", message: safeErrorText(e) };
+          const body = e instanceof RectaDebtError ? { error: "DEBT", debt_offer: e.offer } : e instanceof RectaHttpError ? { error: "HTTP", status: e.status, reason_code: e.reasonCode, body: e.body } : e instanceof RectaSendUnknownError ? { error: "SEND_UNKNOWN", check: e.check, message: e.message, ...(e.resultId === undefined ? {} : { result_id: e.resultId }), sent_tx_hashes: e.sentTxHashes, transfer_sent: e.transferSent } : e instanceof RectaCheckError ? { error: "CHECK_FAILED", check: e.check, message: e.message } : { error: "FAILED", message: safeErrorText(e) };
           return ok({ content: text(body), isError: true });
         }
       }

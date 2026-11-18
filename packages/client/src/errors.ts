@@ -22,6 +22,8 @@ export class RectaSendUnknownError extends RectaCheckError {
     readonly resultId: string | undefined,
     /** Every transaction hash already sent, in order; empty when none came back. */
     readonly sentTxHashes: readonly { readonly role: string; readonly chainId: number; readonly hash: `0x${string}` }[],
+    /** "NO" only when the transfer was certainly never asked for; "UNKNOWN" when it may have left (no hash for it). */
+    readonly transferSent: "NO" | "UNKNOWN" = "UNKNOWN",
   ) {
     super("transaction_unknown", message);
   }
