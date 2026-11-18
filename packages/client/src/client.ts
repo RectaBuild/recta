@@ -232,13 +232,15 @@ export function createRectaClient(options: RectaClientOptions) {
     return checkExecutionArtifact(artifact, { resultId: resultIdOf(resultId), request, limits: { signer: payer, nowUnix: nowUnix(), maxNativeValueWei: limits.maxNativeValueWei, minOutputBps: limits.minOutputBps } });
   }
 
-  /** Step 3: checks, then sends the transactions in order, each mined successfully before the next. */
+  /** Step 3: checks, then sends the transactions in order: each mined successfully before the next, or, with a signer
+   *  that can (`sendInSequence`), all of them back to back and then awaited (`executeInSequence`). */
   async function execute(resultId: string, artifact: unknown, request: EvaluationRequestView): Promise<{ readonly approvalTxHash?: Hex; readonly originTxHash: Hex }> {
     // The last moment before anything is sent: with a fee authorized for this decision, the payer must still hold it
     // in USDC on Base (plus the transfer itself when it starts from Base USDC) with the Permit2 allowance for it.
     const fee = feeAmounts.get(resultIdOf(resultId));
     if (fee !== undefined) assertFeeReady(feeReadiness(await chain.readFeeFunds(signer.address), fee, routeReserveOf(request)));
     const checked = await check(resultId, artifact, request);
+    if (signer.sendInSequence !== undefined && checked.transactions.length > 1) return executeInSequence(resultId, checked, signer.sendInSequence.bind(signer));
     let approvalTxHash: Hex | undefined;
     for (const tx of checked.transactions) {
       const { role, ...send } = tx;
@@ -248,6 +250,40 @@ export function createRectaClient(options: RectaClientOptions) {
       else return { ...(approvalTxHash === undefined ? {} : { approvalTxHash }), originTxHash: hash };
     }
     throw new RectaCheckError("transaction_order", "the artifact has no execution");
+  }
+
+  /**
+   * Recta's saving holds for a short horizon after its anchor block (60 s). On Ethereum, waiting for the approval's
+   * receipt before sending the deposit took the deposit past it (Recta BIT-OPS-182: mined 72 s after the anchor, nothing
+   * accrued). A signer that can (`sendInSequence`: a local key) sends the approval and the deposit one after another on
+   * consecutive nonces, and they are awaited only then. From the first hash on, every failure names every hash sent:
+   * whether the deposit moved funds is then UNKNOWN until the chain says so, and nothing may be sent again before.
+   */
+  async function executeInSequence(resultId: string, checked: CheckedArtifact, sendInSequence: NonNullable<RectaSigner["sendInSequence"]>): Promise<{ readonly approvalTxHash?: Hex; readonly originTxHash: Hex }> {
+    const sent: { readonly role: "APPROVAL" | "EXECUTION"; readonly chainId: number; readonly hash: Hex }[] = [];
+    const unknown = (what: string): RectaCheckError =>
+      new RectaCheckError("transaction_unknown", `${sent.map((s) => `${s.role} ${s.hash}`).join(", ")} sent for ${resultId}, then ${what}: the transfer may have moved funds, so look these hashes up on chain (and report the EXECUTION if it succeeded) before sending anything again`);
+    const roles = checked.transactions.map((t) => t.role);
+    try {
+      await sendInSequence(checked.transactions.map(({ role: _role, ...send }) => send), (i, hash) => { sent.push({ role: roles[i]!, chainId: checked.transactions[i]!.chainId, hash }); });
+    } catch (e) {
+      if (sent.length === 0) throw e;
+      throw unknown(`sending the next transaction failed (${safeErrorText(e).slice(0, 200)})`);
+    }
+    const execution = sent.find((s) => s.role === "EXECUTION");
+    if (execution === undefined || sent.length !== checked.transactions.length) throw unknown("the signer stopped before the transfer");
+    const ok: boolean[] = [];
+    try {
+      for (const s of sent) ok.push(await chain.waitForSuccess(s.chainId, s.hash));
+    } catch (e) {
+      throw unknown(`waiting for a receipt failed (${safeErrorText(e).slice(0, 200)})`);
+    }
+    if (!ok[sent.indexOf(execution)]) throw new RectaCheckError("transaction_failed", `EXECUTION transaction ${execution.hash} reverted: nothing was moved by it`);
+    // The deposit moved funds even if an approval reverted (an allowance already there): it is reported, the reverted
+    // approval is not (Recta then prices the approval at its committed upper bound: the saving can only be understated).
+    const approvalsOk = sent.every((s, i) => s.role !== "APPROVAL" || ok[i]);
+    const approvalTxHash = approvalsOk ? sent.filter((s) => s.role === "APPROVAL").at(-1)?.hash : undefined;
+    return { ...(approvalTxHash === undefined ? {} : { approvalTxHash }), originTxHash: execution.hash };
   }
 
   /**

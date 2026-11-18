@@ -44,6 +44,12 @@ export interface RectaSigner {
   signTypedData(typedData: RectaTypedData): Promise<Hex>;
   /** Sends one transaction on `tx.chainId` and returns its hash. */
   sendTransaction(tx: RectaTransaction): Promise<Hex>;
+  /**
+   * Optional: sends transactions of one chain one after another without waiting for any receipt, on consecutive nonces
+   * read once, calling `onSent(i, hash)` the moment each leaves. Only a signer that does not itself wait for receipts
+   * and that picks its own nonces implements it (viemSigner with a local key); without it, execute() waits for each.
+   */
+  sendInSequence?(txs: readonly RectaTransaction[], onSent: (index: number, hash: Hex) => void): Promise<void>;
 }
 
 /** Read access to the chains (the agent's own RPC): receipts, and the payer's USDC on Base before a fee is signed. */
@@ -79,10 +85,19 @@ export function viemSigner(args: {
     signMessage: (message) => account.signMessage!({ message }),
     signTypedData: (td) => account.signTypedData!(td as never),
     sendTransaction: (tx) => sendWith(args.walletClientFor(tx.chainId), account, tx),
+    // A local key: the nonce is read once from the node (pending) and the transactions take it and the ones after it,
+    // so they never share one. Nothing is remembered between calls.
+    sendInSequence: async (txs, onSent) => {
+      const chainId = txs[0]?.chainId;
+      if (chainId === undefined || txs.some((t) => t.chainId !== chainId)) throw new Error("sendInSequence sends transactions of one chain");
+      const client = args.walletClientFor(chainId);
+      const first = Number(BigInt((await client.request({ method: "eth_getTransactionCount", params: [account.address, "pending"] } as never)) as string));
+      for (const [i, tx] of txs.entries()) onSent(i, await sendWith(client, account, tx, first + i));
+    },
   };
 }
 
-async function sendWith(client: WalletClient<Transport, Chain | undefined, Account | undefined>, account: Account, tx: RectaTransaction): Promise<Hex> {
+async function sendWith(client: WalletClient<Transport, Chain | undefined, Account | undefined>, account: Account, tx: RectaTransaction, nonce?: number): Promise<Hex> {
   const chainId = await client.getChainId();
   if (chainId !== tx.chainId) throw new Error(`walletClientFor(${tx.chainId}) returned a client on chain ${chainId}`);
   return client.sendTransaction({
@@ -95,6 +110,7 @@ async function sendWith(client: WalletClient<Transport, Chain | undefined, Accou
     maxFeePerGas: tx.maxFeePerGas,
     maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
     type: "eip1559",
+    ...(nonce === undefined ? {} : { nonce }),
   } as never);
 }
 
