@@ -44,6 +44,12 @@ export interface RectaSigner {
   signTypedData(typedData: RectaTypedData): Promise<Hex>;
   /** Sends one transaction on `tx.chainId` and returns its hash. */
   sendTransaction(tx: RectaTransaction): Promise<Hex>;
+  /**
+   * Optional: sends transactions of one chain one after another without waiting for any receipt, on consecutive nonces
+   * read once, calling `onSent(i, hash)` the moment each leaves. Only a signer that does not itself wait for receipts
+   * and that picks its own nonces implements it (viemSigner with a local key); without it, execute() waits for each.
+   */
+  sendInSequence?(txs: readonly RectaTransaction[], onSent: (index: number, hash: Hex) => void): Promise<void>;
 }
 
 /** Read access to the chains (the agent's own RPC): receipts, and the payer's USDC on Base before a fee is signed. */
@@ -74,30 +80,22 @@ export function viemSigner(args: {
       sendTransaction: (tx) => sendWith(args.walletClientFor(tx.chainId), account, tx),
     };
   }
-  // A local key: this signer picks the nonce. The node's pending count may not show a transaction sent a moment ago
-  // (another node behind the same RPC URL), and the approval and the deposit now leave back to back, so the nonce after
-  // the last one this signer sent is used while it is newer than the node's count (for NONCE_MEMORY_MS at most, so a
-  // transaction the network dropped cannot leave a gap for long).
-  const sentNonces = new Map<number, { readonly next: number; readonly at: number }>();
   return {
     address: account.address,
     signMessage: (message) => account.signMessage!({ message }),
     signTypedData: (td) => account.signTypedData!(td as never),
-    sendTransaction: async (tx) => {
-      const client = args.walletClientFor(tx.chainId);
-      const counted = Number(BigInt((await client.request({ method: "eth_getTransactionCount", params: [account.address, "pending"] } as never)) as string));
-      const last = sentNonces.get(tx.chainId);
-      sentNonces.delete(tx.chainId);
-      const nonce = last !== undefined && Date.now() - last.at < NONCE_MEMORY_MS && last.next > counted ? last.next : counted;
-      const hash = await sendWith(client, account, tx, nonce);
-      sentNonces.set(tx.chainId, { next: nonce + 1, at: Date.now() });
-      return hash;
+    sendTransaction: (tx) => sendWith(args.walletClientFor(tx.chainId), account, tx),
+    // A local key: the nonce is read once from the node (pending) and the transactions take it and the ones after it,
+    // so they never share one. Nothing is remembered between calls.
+    sendInSequence: async (txs, onSent) => {
+      const chainId = txs[0]?.chainId;
+      if (chainId === undefined || txs.some((t) => t.chainId !== chainId)) throw new Error("sendInSequence sends transactions of one chain");
+      const client = args.walletClientFor(chainId);
+      const first = Number(BigInt((await client.request({ method: "eth_getTransactionCount", params: [account.address, "pending"] } as never)) as string));
+      for (const [i, tx] of txs.entries()) onSent(i, await sendWith(client, account, tx, first + i));
     },
   };
 }
-
-/** How long a local-key viemSigner trusts its own next nonce over the node's pending count. */
-const NONCE_MEMORY_MS = 120_000;
 
 async function sendWith(client: WalletClient<Transport, Chain | undefined, Account | undefined>, account: Account, tx: RectaTransaction, nonce?: number): Promise<Hex> {
   const chainId = await client.getChainId();

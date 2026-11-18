@@ -1,7 +1,7 @@
 // Recta BIT-OPS-180: a decision's saving holds for 60 s after its anchor block. On Ethereum, waiting for the approval's
-// receipt before sending the deposit took the deposit past it (mined 72 s after the anchor: nothing accrued). execute()
-// now sends the approval and the deposit back to back and only then waits; a local-key viemSigner gives them
-// consecutive nonces even when the node's pending count lags.
+// receipt before sending the deposit took the deposit past it (mined 72 s after the anchor: nothing accrued). With a
+// signer that can (sendInSequence: viemSigner with a local key), execute() sends the approval and the deposit back to
+// back on consecutive nonces and only then waits; any other signer (MetaMask, smart account, CDP) waits as before.
 // Run after the build: node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -43,63 +43,88 @@ function artifact() {
 const fetchRecta = async (url) => new URL(String(url)).pathname.endsWith("/wallet-policy") ? new Response(policy, { status: 200 }) : new Response("{}", { status: 404 });
 const HASH = (i) => `0x${String(i + 1).padStart(2, "0").repeat(32)}`;
 
-/** A signer and reader that log every send and wait in order; `outcome(i)` is the i-th transaction's success. */
-function rig({ outcome = () => true, sendFails = () => undefined } = {}) {
+/** A reader that logs every wait; `outcome(i)` is the i-th transaction's success, `waitThrows(i)` makes its wait throw. */
+function rig({ outcome = () => true, waitThrows = () => false, sendFails = () => undefined, inSequence = true } = {}) {
   const log = [];
   let n = 0;
+  const one = async (tx) => {
+    const i = n++;
+    const err = sendFails(i);
+    if (err !== undefined) throw err;
+    log.push(`send ${i} ${tx.to.toLowerCase()}`);
+    return HASH(i);
+  };
   const signer = {
     address: account.address,
     signMessage: (message) => account.signMessage({ message }),
     signTypedData: (td) => account.signTypedData(td),
-    sendTransaction: async (tx) => {
-      const i = n++;
-      const err = sendFails(i);
-      if (err !== undefined) throw err;
-      log.push(`send ${i} ${tx.to.toLowerCase()}`);
-      return HASH(i);
-    },
+    sendTransaction: one,
+    ...(inSequence ? { sendInSequence: async (txs, onSent) => { for (const [i, tx] of txs.entries()) onSent(i, await one(tx)); } } : {}),
   };
   const chain = {
     waitForSuccess: async (_chainId, hash) => {
       const i = Number.parseInt(hash.slice(2, 4), 10) - 1;
       log.push(`wait ${i}`);
+      if (waitThrows(i)) throw new Error("timed out https://rpc.example/KEY");
       return outcome(i);
     },
     readFeeFunds: async () => ({ balanceUsdcAtomic: 0n, permit2AllowanceUsdcAtomic: 0n }),
   };
   return { log, client: createRectaClient({ signer, chain, limits, fetch: fetchRecta }) };
 }
+const APPROVE_TO = pins.USDC_BASE.toLowerCase();
 
-test("the approval and the deposit both leave before any receipt is awaited", async () => {
+test("in sequence: the approval and the deposit both leave before any receipt is awaited", async () => {
   const { log, client } = rig();
   const out = await client.execute("r_test", artifact(), request);
-  assert.deepEqual(log, [`send 0 ${pins.USDC_BASE.toLowerCase()}`, `send 1 ${SPOKE}`, "wait 0", "wait 1"]);
+  assert.deepEqual(log, [`send 0 ${APPROVE_TO}`, `send 1 ${SPOKE}`, "wait 0", "wait 1"]);
   assert.deepEqual(out, { approvalTxHash: HASH(0), originTxHash: HASH(1) });
 });
 
-test("a reverted approval names the deposit already sent and what became of it", async () => {
-  const both = rig({ outcome: () => false });
-  await assert.rejects(both.client.execute("r_test", artifact(), request), (e) => e.check === "transaction_failed" && e.message.includes(HASH(1)) && /reverted too: nothing was moved/.test(e.message));
-  const moved = rig({ outcome: (i) => i === 1 });
-  await assert.rejects(moved.client.execute("r_test", artifact(), request), (e) => e.check === "transaction_failed" && /SUCCEEDED \(report it/.test(e.message));
+test("in sequence: a reverted approval with a deposit that succeeded (allowance already there) is reported, without the approval", async () => {
+  const { client } = rig({ outcome: (i) => i === 1 });
+  assert.deepEqual(await client.execute("r_test", artifact(), request), { originTxHash: HASH(1) });
 });
 
-test("a reverted deposit fails as before", async () => {
-  const { client } = rig({ outcome: (i) => i === 0 });
-  await assert.rejects(client.execute("r_test", artifact(), request), (e) => e.check === "transaction_failed" && e.message.includes(`EXECUTION transaction ${HASH(1)} reverted`));
+test("in sequence: a reverted deposit is transaction_failed and says it moved nothing", async () => {
+  for (const outcome of [() => false, (i) => i === 0]) {
+    const { client } = rig({ outcome });
+    await assert.rejects(client.execute("r_test", artifact(), request), (e) => e.check === "transaction_failed" && e.message.includes(`EXECUTION transaction ${HASH(1)} reverted: nothing was moved`));
+  }
 });
 
-test("the deposit's send fails after the approval left: the approval's hash is named, nothing is retried", async () => {
+test("in sequence: the deposit's send fails after the approval left: UNKNOWN, naming the approval and the result_id", async () => {
   const { log, client } = rig({ sendFails: (i) => (i === 1 ? new Error("socket hang up") : undefined) });
-  await assert.rejects(client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.includes(`APPROVAL ${HASH(0)}`) && /look the account up on chain/.test(e.message));
-  assert.deepEqual(log, [`send 0 ${pins.USDC_BASE.toLowerCase()}`]);
-  // A wallet's own refusal keeps its own code (its journal knows what was sent).
-  const own = rig({ sendFails: (i) => (i === 1 ? new RectaCheckError("wallet_send_unknown", "x") : undefined) });
-  await assert.rejects(own.client.execute("r_test", artifact(), request), (e) => e.message === "wallet_send_unknown: x");
+  await assert.rejects(client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.includes(`APPROVAL ${HASH(0)} sent for r_test`) && /before sending anything again/.test(e.message));
+  assert.deepEqual(log, [`send 0 ${APPROVE_TO}`]);
 });
 
-test("viemSigner (local key): consecutive nonces when the node's pending count lags, the node's count when it is ahead", async () => {
-  let counted = 5;
+test("in sequence: a wait that throws is UNKNOWN with every hash sent, and the RPC URL is not repeated", async () => {
+  for (const at of [0, 1]) {
+    const { client } = rig({ waitThrows: (i) => i === at });
+    await assert.rejects(client.execute("r_test", artifact(), request), (e) => e.check === "transaction_unknown" && e.message.includes(`APPROVAL ${HASH(0)}, EXECUTION ${HASH(1)}`) && !e.message.includes("KEY"));
+  }
+});
+
+test("a signer without sendInSequence (MetaMask, smart account, CDP) waits for each as before: a reverted approval stops the deposit", async () => {
+  const ok = rig({ inSequence: false });
+  await ok.client.execute("r_test", artifact(), request);
+  assert.deepEqual(ok.log, [`send 0 ${APPROVE_TO}`, "wait 0", `send 1 ${SPOKE}`, "wait 1"]);
+  const reverted = rig({ inSequence: false, outcome: () => false });
+  await assert.rejects(reverted.client.execute("r_test", artifact(), request), (e) => e.check === "transaction_failed" && e.message.includes(`APPROVAL transaction ${HASH(0)} reverted`));
+  assert.deepEqual(reverted.log, [`send 0 ${APPROVE_TO}`, "wait 0"]);
+});
+
+test("a deposit alone goes through sendTransaction, as before", async () => {
+  const one = artifact();
+  one.transactions = one.transactions.slice(1);
+  const { log, client } = rig();
+  assert.deepEqual(await client.execute("r_test", one, request), { originTxHash: HASH(0) });
+  assert.deepEqual(log, [`send 0 ${SPOKE}`, "wait 0"]);
+});
+
+test("viemSigner (local key): sendInSequence reads the nonce once and uses consecutive ones; nothing is remembered between calls", async () => {
+  let reads = 0;
   const sent = [];
   const wallet = {
     chain: undefined,
@@ -107,15 +132,21 @@ test("viemSigner (local key): consecutive nonces when the node's pending count l
     request: async ({ method, params }) => {
       assert.equal(method, "eth_getTransactionCount");
       assert.deepEqual(params, [account.address, "pending"]);
-      return `0x${counted.toString(16)}`;
+      reads += 1;
+      return "0x5";
     },
     sendTransaction: async (tx) => { sent.push(tx.nonce); return HASH(sent.length - 1); },
   };
   const signer = viemSigner({ account, walletClientFor: () => wallet });
   const tx = { chainId: 8453, to: SPOKE, data: "0x", value: 0n, gas: 21000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n };
+  const seen = [];
+  await signer.sendInSequence([tx, tx], (i, h) => seen.push([i, h]));
+  await signer.sendInSequence([tx, tx], () => {});
+  assert.deepEqual(sent, [5, 6, 5, 6]);
+  assert.equal(reads, 2);
+  assert.deepEqual(seen, [[0, HASH(0)], [1, HASH(1)]]);
+  // sendTransaction alone leaves the nonce to viem, as before.
   await signer.sendTransaction(tx);
-  await signer.sendTransaction(tx); // the node still says 5
-  counted = 9; // other transactions since: the node is ahead
-  await signer.sendTransaction(tx);
-  assert.deepEqual(sent, [5, 6, 9]);
+  assert.equal(sent.at(-1), undefined);
+  await assert.rejects(signer.sendInSequence([tx, { ...tx, chainId: 1 }], () => {}), /one chain/);
 });
