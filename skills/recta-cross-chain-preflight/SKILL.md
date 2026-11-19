@@ -22,8 +22,8 @@ route it knows, read at the same block, and tells you whether a cheaper one exis
    `recta_send_signed_request`. Recta never holds a key.
 3. Read the decision:
    - **Abstention / no saving** → keep your baseline. Nothing is charged.
-   - **Winner with a proven saving** → fetch the execution artifact. If collection is on, it first answers an x402 v2
-     `402` (scheme `upto`, Base USDC): sign the ceiling; only exactly 5 % of the saving Recta later verifies on chain is
+   - **Winner with a proven saving** → fetch the execution artifact. It first answers an x402 v2 `402`
+     (scheme `upto`, Base USDC): sign the ceiling; only exactly 5 % of the saving Recta later verifies on chain is
      pulled. You keep at least 95 % of every verified saving.
 4. Execute the committed transactions yourself, then report the origin transaction hash so Recta can verify delivery.
 

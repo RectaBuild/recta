@@ -43,7 +43,9 @@ Recta charges exactly 5 % of the saving it verifies on chain. If not, keep your 
    `mm recta pay-debt --debt-offer '<the debt_offer JSON from the error>'`, then evaluate again.
 
 ## Notes
-- `--amount` is in whole units of the asset (100 means 100 USDC), from 3.5 with no upper limit.
+- `--amount` is in whole units of the asset (100 means 100 USDC), from 3.5. Recta sets no upper
+  limit. `mm recta move` refuses more than `--max-amount` (1000 by default); change it with that flag, for example
+  `--max-amount 5000`.
 - MetaMask may pause a signature or a transaction for your approval (`[AWAITING_MFA]`): approve it where MetaMask
   asks, and the command continues.
 - Every signature must recover to your wallet's address, and every transaction is read back once mined: if anything
