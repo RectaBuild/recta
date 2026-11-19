@@ -184,10 +184,10 @@ export function createRectaClient(options: RectaClientOptions) {
   }
 
   /**
-   * Step 2: the decision's committed transactions. With Recta's collection on, the artifact first asks for the fee
+   * Step 2: the decision's committed transactions. The artifact first asks for the fee
    * permit: it is checked, rebuilt, and signed only if it passes and the payer holds the permit's amount in USDC on
    * Base with at least that allowance to Permit2 (otherwise RectaCheckError `fee_balance` / `fee_allowance`, nothing
-   * signed; see `feeApproval`); then it is stored and the answer carries the artifact. With `dryRun` and collection on,
+   * signed; see `feeApproval`); then it is stored and the answer carries the artifact. With `dryRun`,
    * it stops at the permit, before the artifact exists, and returns the typed data it would sign and the payer's funds:
    * the transactions can only be inspected after the permit is signed. Pass the evaluation's `request` so a route that
    * starts from USDC on Base reserves its own amount from the balance; `execute` checks the funds again either way.
@@ -355,7 +355,7 @@ export function createRectaClient(options: RectaClientOptions) {
 
   /**
    * The four steps in a row. With `dryRun`, it evaluates and checks but signs no permit and sends no transaction: it
-   * stops at the permit (collection on) or after checking the artifact (collection off).
+   * stops at the permit (or, on a service that does not collect, after checking the artifact).
    */
   async function run(request: EvaluationRequestView & Record<string, unknown>, opts: { readonly dryRun?: boolean; readonly idempotencyKey?: string } = {}) {
     const decision = await evaluate(request, opts.idempotencyKey === undefined ? {} : { idempotencyKey: opts.idempotencyKey });
