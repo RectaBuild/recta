@@ -239,7 +239,7 @@ MetaMask's own policy (and its two-factor approval, if you turned it on). No pri
 ```sh
 mm config set experimentalPlugins true   # mm's plugin system is in beta and off by default
 mm plugins install @recta/mcp            # shows each command's permissions and asks you to accept them
-mm recta move --source-network base --source-asset USDC --destination-network arbitrum --amount 100 --baseline-provider across --json
+mm recta move --source-network base --source-asset USDC --destination-network arbitrum --amount 100 --baseline-provider lifi --json
 ```
 
 | Command | Permissions | What it does |
