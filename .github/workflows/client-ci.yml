@@ -29,6 +29,8 @@ jobs:
             npx tsc -p tsconfig.build.json
             node -e "import('./dist/index.js').then((m) => { if (typeof m.createRectaClient !== 'function') process.exit(1); console.log('viem', '$v', Object.keys(m).length, 'exports'); })"
           done
+      - name: Recta Preflight and withPreflight (no network)
+        run: node --test test/preflight.test.mjs
       - name: Requests name this package (recta-client/<package.json version>)
         run: |
           node --input-type=module -e "
