@@ -4,8 +4,8 @@ import { networkChainIds } from "./index.js";
 import { rectaTools, type RectaTool, type RectaToolkitOptions } from "./tools.js";
 
 /**
- * Recta as a GOAT SDK plugin (`getOnChainTools({ wallet, plugins: [recta(…)] })`): `recta_fit`,
- * `recta_trial_evaluation`, `recta_evaluate`, `recta_preview`, `recta_report` and `recta_ledger`, signed with the
+ * Recta as a GOAT SDK plugin (`getOnChainTools({ wallet, plugins: [recta(…)] })`): `recta_preflight`,
+ * `recta_fit`, `recta_trial_evaluation`, `recta_evaluate`, `recta_preview`, `recta_report` and `recta_ledger`, signed with the
  * agent's GOAT EVM wallet. Typed by shape only, so this module does not depend on @goat-sdk/core; it needs `zod`.
  *
  * It never sends: a GOAT `sendTransaction` takes no gas limit or fee caps, and Recta's route is committed to exact ones.
@@ -29,7 +29,7 @@ export interface RectaGoatOptions extends Omit<RectaToolkitOptions, "allowExecut
   readonly readFeeFunds?: RectaChainReader["readFeeFunds"];
 }
 
-const GOAT_TOOLS: ReadonlySet<string> = new Set(["recta_fit", "recta_trial_evaluation", "recta_evaluate", "recta_preview", "recta_report", "recta_ledger", "recta_fee_funds"]);
+const GOAT_TOOLS: ReadonlySet<string> = new Set(["recta_preflight", "recta_fit", "recta_trial_evaluation", "recta_evaluate", "recta_preview", "recta_report", "recta_ledger", "recta_fee_funds"]);
 const GWEI = 1_000_000_000n;
 
 export function recta(options: RectaGoatOptions) {

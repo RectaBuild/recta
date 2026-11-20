@@ -60,7 +60,7 @@ test("AgentKit: read-only actions by default, a signed evaluation from the walle
   assert.equal(provider.supportsNetwork({ protocolFamily: "evm", chainId: "8453" }), true);
   assert.equal(provider.supportsNetwork({ protocolFamily: "svm" }), false);
   const actions = provider.getActions(agentKitWallet());
-  assert.deepEqual(actions.map((a) => a.name).sort(), ["recta_evaluate", "recta_fee_funds", "recta_fit", "recta_ledger", "recta_preview", "recta_report", "recta_trial_evaluation"]);
+  assert.deepEqual(actions.map((a) => a.name).sort(), ["recta_evaluate", "recta_fee_funds", "recta_fit", "recta_ledger", "recta_preflight", "recta_preview", "recta_report", "recta_trial_evaluation"]);
   const by = Object.fromEntries(actions.map((a) => [a.name, a]));
   assert.throws(() => by.recta_evaluate.schema.parse({ source_network: "base" }));
 
@@ -111,7 +111,7 @@ test("GOAT: evaluation tools only, signed with the GOAT wallet, never sending", 
     signTypedData: async (td) => ({ signature: await account.signTypedData(td) }),
   };
   const tools = plugin.getTools(goatWallet);
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["recta_evaluate", "recta_fee_funds", "recta_fit", "recta_ledger", "recta_preview", "recta_report", "recta_trial_evaluation"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["recta_evaluate", "recta_fee_funds", "recta_fit", "recta_ledger", "recta_preflight", "recta_preview", "recta_report", "recta_trial_evaluation"]);
   const evaluate = tools.find((t) => t.name === "recta_evaluate");
   await evaluate.execute(evaluate.parameters.parse(args));
   assert.ok(await recovers(calls.at(-1)));

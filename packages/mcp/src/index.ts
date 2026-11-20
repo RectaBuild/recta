@@ -16,7 +16,7 @@ export function networkChainIds(): Map<string, number> {
 }
 
 export interface EnvConfig {
-  /** Absent: the server runs without a key and offers only recta_fit and recta_trial_evaluation (ASTRA T5). */
+  /** Absent: the server runs without a key and offers only recta_preflight, recta_fit and recta_trial_evaluation (ASTRA T5). */
   readonly privateKey?: Hex;
   /** RECTA_ADDRESS: a public address the keyless trial uses as sender (never a key). */
   readonly address?: Hex;
@@ -208,7 +208,7 @@ export async function main(): Promise<void> {
   const transport = (id: number) => http(config.rpcUrls[id]);
   const ids = networkChainIds();
   const account = config.privateKey === undefined ? undefined : privateKeyToAccount(config.privateKey);
-  if (account === undefined) process.stderr.write("recta-mcp: no RECTA_PRIVATE_KEY, running the free tools only (recta_fit, recta_trial_evaluation)\n");
+  if (account === undefined) process.stderr.write("recta-mcp: no RECTA_PRIVATE_KEY, running the free tools only (recta_preflight, recta_fit, recta_trial_evaluation)\n");
   let signer: RectaSigner;
   if (account === undefined) signer = keylessSigner(config.address);
   else if (config.smartAccount !== undefined) {

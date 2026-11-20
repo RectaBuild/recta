@@ -22,10 +22,10 @@ function plugin(extra = {}) {
 
 const runtime = (settings = {}) => ({ getSetting: (k) => settings[k] });
 
-test("only the two free actions, with parameters from the MCP schemas", () => {
+test("only the three free actions, with parameters from the MCP schemas", () => {
   const { p, action } = plugin();
   assert.equal(p.name, "recta");
-  assert.deepEqual(p.actions.map((a) => a.name).sort(), ["RECTA_FIT", "RECTA_TRIAL_EVALUATION"]);
+  assert.deepEqual(p.actions.map((a) => a.name).sort(), ["RECTA_FIT", "RECTA_PREFLIGHT", "RECTA_TRIAL_EVALUATION"]);
   const trial = action("RECTA_TRIAL_EVALUATION");
   const required = trial.parameters.filter((x) => x.required).map((x) => x.name).sort();
   assert.deepEqual(required, ["amount", "baseline_provider", "destination_network", "source_asset", "source_network"]);
@@ -33,7 +33,7 @@ test("only the two free actions, with parameters from the MCP schemas", () => {
   assert.deepEqual(trial.parameters.find((x) => x.name === "latency_class").schema.enum, ["SECONDS", "MINUTES", "FINALITY_BOUND", "ANY"]);
   assert.match(trial.routingHint, /never moves funds/);
   assert.match(trial.parameters.find((x) => x.name === "recipient").description, /base58/);
-  assert.equal(rectaPlugin.actions.length, 2);
+  assert.equal(rectaPlugin.actions.length, 3);
   assert.equal(defaultPlugin, rectaPlugin);
 });
 

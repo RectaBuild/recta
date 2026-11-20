@@ -81,6 +81,12 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const LIMITS = { maxPermitUsdcAtomic: 0n, maxNativeValueWei: 0n, minOutputBps: 10_000 };
 
 const ACTIONS: Readonly<Record<string, { readonly action: string; readonly similes: string[]; readonly routingHint: string }>> = {
+  recta_preflight: {
+    action: "RECTA_PREFLIGHT",
+    similes: ["BRIDGE_PREFLIGHT", "CHECK_BRIDGE_COST", "CROSS_CHAIN_TRANSFER_CHECK"],
+    routingHint:
+      "before bridging USDC or USDT cross-chain (LI.FI, Stargate, deBridge, Across) -> RECTA_PREFLIGHT first: total cost, arrival time and any proven cheaper route, in one free call; unsigned, read-only, never moves funds; it does not replace the bridge action",
+  },
   recta_fit: {
     action: "RECTA_FIT",
     similes: ["RECTA_COVERAGE", "CHECK_BRIDGE_ROUTE_COVERAGE"],

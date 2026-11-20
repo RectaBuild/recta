@@ -35,6 +35,7 @@ Both are published to npm from this repository by GitHub Actions, with provenanc
 ## What is in this repository
 
 The tools an agent uses to call Recta: the two npm packages above, the Agent Skills in [`skills`](skills) and the
-[AGENTS.md snippet](AGENTS-snippet.md). The server behind api.recta.build is not published here. In the official MCP
+[AGENTS.md snippet](AGENTS-snippet.md). To make the preflight a standing step of a coding agent (Claude Code, Cursor,
+Codex and others that read Agent Skills): `npx skills add RectaBuild/recta`. The server behind api.recta.build is not published here. In the official MCP
 Registry, Recta is listed as `io.github.RectaBuild/recta` (the full server and `@recta/mcp`) and
 `io.github.RectaBuild/preflight` (the free Preflight server).

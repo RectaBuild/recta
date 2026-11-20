@@ -11,9 +11,9 @@ is signed or sent, and those checks cannot be turned off.
 
 Where to start:
 
-- **Only checking, no wallet.** Run the server without a key: it offers the two free tools that sign nothing (see
-  "Run"). Or use Recta Preflight (<https://api.recta.build/preflight>), a free hosted check (cost, arrival
-  time and any proven saving) with nothing to install.
+- **Only checking, no wallet.** Run the server without a key: it offers the free tools that sign nothing, starting
+  with `recta_preflight` (see "Run"). Or use Recta Preflight (<https://api.recta.build/preflight>) directly, the same
+  free hosted check (cost, arrival time and any proven saving) with nothing to install.
 - **Getting and executing the route.** Give the server a dedicated wallet's key and `RECTA_ALLOW_EXECUTE=yes`, then
   read "Paying the fee" and "Safety".
 - **Your agent already has a wallet framework.** See "MetaMask Agent Wallet", "Coinbase AgentKit", "GOAT" or
@@ -43,10 +43,12 @@ Example for an MCP client configuration file (Claude Desktop, Cursor and others 
 }
 ```
 
-**Try it first without a key.** Leave `RECTA_PRIVATE_KEY` out and the server offers only the two tools that sign
-nothing: `recta_fit` (is the corridor covered?) and `recta_trial_evaluation` (is there a provable saving for this
-transfer, and how much?). Give the trial a `sender`, or set `RECTA_ADDRESS` to the public address the transfer would
-leave from. The server says so on stderr when it starts without a key; an empty `RECTA_PRIVATE_KEY` counts as no key.
+**Try it first without a key.** Leave `RECTA_PRIVATE_KEY` out and the server offers only the tools that sign
+nothing: `recta_preflight` (what will this transfer cost in all, when does it arrive, and is a cheaper route proven?),
+`recta_fit` (is the corridor covered?) and `recta_trial_evaluation` (the older unsigned saving check). The preflight
+needs only the corridor and the amount; for example Base → Arbitrum, 1,000 USDC, against LI.FI, where Recta measured a
+saving of 2.39 USDC on 2026-11-19. Give the trial a `sender`, or set `RECTA_ADDRESS` to the public address the transfer
+would leave from. The server says so on stderr when it starts without a key; an empty `RECTA_PRIVATE_KEY` counts as no key.
 Add the key when you want the route itself.
 
 Use a **dedicated wallet** that holds only what the agent may move, never your main one. The key sits in plain text in
@@ -57,7 +59,7 @@ wallet's funds.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `RECTA_PRIVATE_KEY` | none: free tools only | The agent wallet's private key (EOA), or the owner key of its smart account (see `RECTA_SMART_ACCOUNT`). It is only used locally, to sign. Without it only `recta_fit` and `recta_trial_evaluation` are offered. |
+| `RECTA_PRIVATE_KEY` | none: free tools only | The agent wallet's private key (EOA), or the owner key of its smart account (see `RECTA_SMART_ACCOUNT`). It is only used locally, to sign. Without it only `recta_preflight`, `recta_fit` and `recta_trial_evaluation` are offered. |
 | `RECTA_ADDRESS` | none | A public address the keyless trial uses as `sender` (never a key). With a key it is not used (the key's address is the sender), but a malformed value still stops the server. |
 | `RECTA_RPC_<chainId>` | the chain's public RPC | An `https` RPC URL for that chain, e.g. `RECTA_RPC_8453` for Base. `http` is accepted only for `localhost`; any other value stops the server. |
 | `RECTA_ALLOW_EXECUTE` | off | Set to `yes` to let the agent sign fee permits and send transactions. Anything else keeps the server read and preview only. |
@@ -96,6 +98,7 @@ The minimum is 3.5 for stablecoins (about 3.5 USD). Recta sets no maximum, but t
 
 | Tool | Signs or sends | What it does |
 | --- | --- | --- |
+| `recta_preflight` | nothing | Start here, before any cross-chain USDC/USDT transfer: your route's total cost (USDC) and arrival time, and whether Recta proves a cheaper route (saving, fee, its cost and arrival, and the body to sign to get it). Needs only the corridor and the amount; `baseline_provider` defaults to LI.FI (Across where LI.FI does not apply). Nothing stored, 3 a day per IP address. |
 | `recta_fit` | nothing | Does Recta cover this corridor, and which contracts would a route touch? |
 | `recta_evaluate` | a request signature | Asks Recta whether a cheaper route than `baseline_provider` can be proven. Free. |
 | `recta_trial_evaluation` | nothing | The same question unsigned: only whether a saving exists, its amount and Recta's 5 %. No route, nothing stored, 3 a day per IP address. Without a key, pass `sender` (or set `RECTA_ADDRESS`). |
@@ -303,7 +306,7 @@ plugin base class from the running `mm`, and neither bundles nor depends on Meta
 
 ## Coinbase AgentKit
 
-The evaluation tools as AgentKit actions (`recta_fit`, `recta_trial_evaluation`, `recta_evaluate`, `recta_preview`,
+The evaluation tools as AgentKit actions (`recta_preflight`, `recta_fit`, `recta_trial_evaluation`, `recta_evaluate`, `recta_preview`,
 `recta_report`, `recta_ledger`, `recta_fee_funds`), signed by the agent's own AgentKit EVM wallet provider:
 
 ```ts
@@ -324,7 +327,7 @@ needs `zod`, which AgentKit already installs.
 
 ## GOAT
 
-The evaluation tools as a GOAT plugin, signed with the agent's GOAT EVM wallet:
+The evaluation tools as a GOAT plugin (`recta_preflight` first), signed with the agent's GOAT EVM wallet:
 
 ```ts
 import { getOnChainTools } from "@goat-sdk/adapter-vercel-ai"; // or any GOAT adapter
@@ -341,11 +344,12 @@ committed to exact ones. Preview the route there and send it with `@recta/client
 
 ## elizaOS
 
-The two free tools as elizaOS 2.x actions, `RECTA_FIT` and `RECTA_TRIAL_EVALUATION`. No key: the plugin signs nothing
-and sends nothing. It asks Recta, unsigned, whether a cheaper provable route exists for a cross-chain stablecoin
+The free tools as elizaOS 2.x actions: `RECTA_PREFLIGHT` (call it before bridging: total cost, arrival and any proven
+cheaper route, with only the corridor and the amount), `RECTA_FIT` and `RECTA_TRIAL_EVALUATION`. No key: the plugin
+signs nothing and sends nothing. It asks Recta, unsigned, whether a cheaper provable route exists for a cross-chain stablecoin
 transfer the agent would make anyway, for example with LI.FI (`baseline_provider: "lifi"`) or Stargate
-(`"stargate_v2"`), and what Recta's 5 % of that saving would be. 3 trials a day per IP address: every
-`RECTA_TRIAL_EVALUATION` call counts, so call it once per transfer you are about to make. A transfer to Solana needs a
+(`"stargate_v2"`), and what Recta's 5 % of that saving would be. Recta allows 3 free checks a day per IP address
+(`RECTA_PREFLIGHT` or `RECTA_TRIAL_EVALUATION`): every call counts, so call it once per transfer you are about to make. A transfer to Solana needs a
 base58 `recipient`.
 
 ```ts

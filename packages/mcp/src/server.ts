@@ -6,7 +6,7 @@ import { createRectaClient, safeErrorText, RectaCheckError, RectaDebtError, Rect
  * off unless the operator turns it on (`allowExecute`).
  */
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const SERVER_INFO = { name: "recta-local", version: "0.1.16" } as const;
+export const SERVER_INFO = { name: "recta-local", version: "0.1.17" } as const;
 /** Sent on every request this package makes (its own and the client's), so Recta can count real use of it apart from
  *  other clients (no address, no key). */
 export const MCP_USER_AGENT = `recta-mcp/${SERVER_INFO.version}`;
@@ -107,7 +107,30 @@ const TRIAL_INPUT = {
   },
 } as const;
 
+/**
+ * The preflight's arguments (api.recta.build/v1/preflight, BIT-OPS-171/186): the corridor and the amount; the route the
+ * agent would use, the sender and the recipient are optional (Recta compares against LI.FI, or Across where LI.FI does
+ * not apply, and fills a stand-in address when none is given).
+ */
+const PREFLIGHT_INPUT = {
+  type: "object",
+  properties: {
+    ...ROUTE,
+    amount: { type: "string", description: "How much of source_asset to send, in whole tokens: \"1000\" with USDC means 1,000 USDC." },
+    baseline_provider: { type: "string", description: "Optional: the route you would use without Recta, e.g. lifi, across, stargate_v2, cctp_v2_standard. Absent: lifi (LI.FI's own quote), or across where LI.FI does not apply." },
+    sender: { type: "string", description: "Optional: the EVM address the transfer would leave from, for the most exact figure. With a key it is ignored: the sender is the local wallet." },
+    recipient: { type: "string", description: "Optional: the receiving address." },
+  },
+  required: ["source_network", "source_asset", "destination_network", "amount"],
+  additionalProperties: false,
+} as const;
+
 export const TOOLS = [
+  {
+    name: "recta_preflight",
+    description: "Call before any cross-chain USDC/USDT transfer (free, no signature, no key, stores nothing). Give the corridor and the amount, and optionally the route you would use (baseline_provider). Returns your route's estimated total cost in USDC and its arrival time; and, when Recta proves a cheaper route, the saving (a proven lower bound), Recta's 5 % fee, that route's total cost and arrival, and execute_via_recta: the body to sign to get the route. Example: base -> arbitrum, 1000 USDC, against lifi. 3 a day per IP address.",
+    inputSchema: PREFLIGHT_INPUT,
+  },
   {
     name: "recta_fit",
     description: "Free and unsigned: does Recta cover this corridor, and which contracts would a route call? Call it before recta_evaluate.",
@@ -162,9 +185,11 @@ export const TOOLS = [
 
 /** The unsigned trial (api.recta.build, BIT-OPS-079). */
 export const TRIAL_EVALUATION_PATH = "/v1/golden-corridor/trial-evaluation";
+/** The free preflight (api.recta.build, BIT-OPS-171): cost, arrival and proven saving of a transfer, unsigned. */
+export const PREFLIGHT_PATH = "/v1/preflight";
 const EXECUTING_TOOLS: ReadonlySet<string> = new Set(["recta_execute", "recta_pay_debt", "recta_approve_fee"]);
 /** The tools a server without a key offers: they sign nothing. */
-export const KEYLESS_TOOLS: ReadonlySet<string> = new Set(["recta_fit", "recta_trial_evaluation"]);
+export const KEYLESS_TOOLS: ReadonlySet<string> = new Set(["recta_preflight", "recta_fit", "recta_trial_evaluation"]);
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const USDC_AMOUNT = /^\d+(\.\d{1,6})?$/;
@@ -227,7 +252,7 @@ export function createLocalServer(options: LocalServerOptions) {
   }
 
   async function call(name: string, args: Json): Promise<unknown> {
-    if (options.keyless === true && !KEYLESS_TOOLS.has(name)) throw new RectaCheckError("no_key", `${name} needs the wallet's key: set RECTA_PRIVATE_KEY (a dedicated wallet); without it only recta_fit and recta_trial_evaluation run`);
+    if (options.keyless === true && !KEYLESS_TOOLS.has(name)) throw new RectaCheckError("no_key", `${name} needs the wallet's key: set RECTA_PRIVATE_KEY (a dedicated wallet); without it only recta_preflight, recta_fit and recta_trial_evaluation run`);
     switch (name) {
       case "recta_fit": {
         const q = new URLSearchParams({ source_network: str(args, "source_network"), source_asset: str(args, "source_asset"), destination_network: str(args, "destination_network"), destination_asset: opt(args, "destination_asset") ?? str(args, "source_asset") });
@@ -240,6 +265,26 @@ export function createLocalServer(options: LocalServerOptions) {
         const id = decision["result_id"];
         if (typeof id === "string") requests.set(id, request);
         return decision;
+      }
+      case "recta_preflight": {
+        const body: Record<string, string> = {
+          source_network: str(args, "source_network"),
+          source_asset: str(args, "source_asset"),
+          destination_network: str(args, "destination_network"),
+          amount: str(args, "amount"),
+        };
+        for (const k of ["destination_asset", "baseline_provider", "recipient"] as const) {
+          const v = opt(args, k);
+          if (v !== undefined) body[k] = v;
+        }
+        // The wallet's own address with a key; without one, the call's sender or RECTA_ADDRESS; else Recta's stand-in.
+        const given = options.keyless === true ? opt(args, "sender") : undefined;
+        if (given !== undefined && !ADDRESS.test(given)) throw new RectaCheckError("input", "sender must be an EVM address, 0x + 40 hex characters");
+        const sender = given ?? options.signer.address;
+        if (sender.toLowerCase() !== ZERO_ADDRESS) body["sender"] = sender;
+        const r = await doFetch(`${pins.RECTA_ORIGIN}${PREFLIGHT_PATH}`, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(body) });
+        const text = await r.text();
+        try { return JSON.parse(text) as unknown; } catch { return { status: r.status, body: text }; }
       }
       case "recta_trial_evaluation": {
         const r = await doFetch(`${pins.RECTA_ORIGIN}${TRIAL_EVALUATION_PATH}`, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(await evaluationRequestOf(args, true)) });
@@ -335,8 +380,8 @@ export function createLocalServer(options: LocalServerOptions) {
         const requested = params["protocolVersion"];
         const protocolVersion = typeof requested === "string" && (MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : MCP_PROTOCOL_VERSIONS[0];
         return ok({ protocolVersion, capabilities: { tools: {} }, serverInfo: SERVER_INFO, instructions: options.keyless === true
-          ? "Running without a key: recta_fit says whether Recta covers a corridor, and recta_trial_evaluation, unsigned, whether a cheaper provable route exists for a transfer you would make anyway (baseline_provider). To get the route, the operator sets RECTA_PRIVATE_KEY of a dedicated wallet."
-          : `Before a cross-chain stablecoin transfer, call recta_evaluate with the route you would use anyway (baseline_provider). Use Recta's route only when it proves a saving; otherwise keep yours and nothing is owed.${options.signer.smartAccountChainId === undefined ? "" : " This wallet is a smart account on Base: Recta serves its transfers from Base (source_network base) only."}` });
+          ? "Running without a key. Start with recta_preflight before any cross-chain USDC/USDT transfer: one free call gives your route's total cost and arrival, and whether Recta proves a cheaper route. recta_fit says whether Recta covers a corridor. To get the route, the operator sets RECTA_PRIVATE_KEY of a dedicated wallet."
+          : `Before a cross-chain stablecoin transfer, start with recta_preflight (free, one call: cost, arrival, proven saving). When it finds a saving, call recta_evaluate with the route you would use anyway (baseline_provider) to get Recta's route. Use it only when it proves a saving; otherwise keep yours and nothing is owed.${options.signer.smartAccountChainId === undefined ? "" : " This wallet is a smart account on Base: Recta serves its transfers from Base (source_network base) only."}` });
       }
       case "ping":
         return ok({});
