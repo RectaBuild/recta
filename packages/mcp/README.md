@@ -239,7 +239,7 @@ MetaMask's own policy (and its two-factor approval, if you turned it on). No pri
 ```sh
 mm config set experimentalPlugins true   # mm's plugin system is in beta and off by default
 mm plugins install @recta/mcp            # shows each command's permissions and asks you to accept them
-mm recta move --source-network base --source-asset USDC --destination-network arbitrum --amount 100 --baseline-provider stargate_v2 --json
+mm recta move --source-network base --source-asset USDC --destination-network arbitrum --amount 100 --baseline-provider across --json
 ```
 
 | Command | Permissions | What it does |
@@ -347,8 +347,8 @@ committed to exact ones. Preview the route there and send it with `@recta/client
 The free tools as elizaOS 2.x actions: `RECTA_PREFLIGHT` (call it before bridging: total cost, arrival and any proven
 cheaper route, with only the corridor and the amount), `RECTA_FIT` and `RECTA_TRIAL_EVALUATION`. No key: the plugin
 signs nothing and sends nothing. It asks Recta, unsigned, whether a cheaper provable route exists for a cross-chain stablecoin
-transfer the agent would make anyway, for example with LI.FI (`baseline_provider: "lifi"`) or Stargate
-(`"stargate_v2"`), and what Recta's 5 % of that saving would be. Recta allows 3 free checks a day per IP address
+transfer the agent would make anyway, for example with LI.FI (`baseline_provider: "lifi"`) or Across
+(`"across"`), and what Recta's 5 % of that saving would be. Recta allows 3 free checks a day per IP address
 (`RECTA_PREFLIGHT` or `RECTA_TRIAL_EVALUATION`): every call counts, so call it once per transfer you are about to make. A transfer to Solana needs a
 base58 `recipient`.
 
