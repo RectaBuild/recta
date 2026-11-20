@@ -1,0 +1,70 @@
+{
+  "name": "@recta/plugin-recta",
+  "version": "0.1.0",
+  "description": "elizaOS plugin for Recta Preflight: before a cross-chain USDC/USDT transfer, one free keyless action returns the route's total cost, arrival time and whether a cheaper route is proven. Never signs or moves funds.",
+  "license": "MIT",
+  "author": "Recta (https://recta.build)",
+  "homepage": "https://github.com/RectaBuild/recta/tree/main/packages/plugin-recta#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RectaBuild/recta.git",
+    "directory": "packages/plugin-recta"
+  },
+  "bugs": {
+    "url": "https://github.com/RectaBuild/recta/issues"
+  },
+  "keywords": [
+    "elizaos",
+    "elizaos-plugins",
+    "plugin",
+    "recta",
+    "preflight",
+    "cross-chain",
+    "bridge",
+    "stablecoin",
+    "usdc"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "images",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@recta/mcp": "0.1.17"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "typescript": "5.9.3"
+  },
+  "agentConfig": {
+    "pluginType": "elizaos:plugin:1.0.0",
+    "pluginParameters": {
+      "RECTA_ADDRESS": {
+        "type": "string",
+        "description": "Optional public EVM address the transfers leave from, for the most exact figure (never a key). A call may also pass sender.",
+        "required": false
+      }
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -3,7 +3,8 @@ import { chainOf, gasCapsFrom, keylessSigner, networkChainIds } from "./index.js
 import { createLocalServer, KEYLESS_TOOLS, TOOLS } from "./server.js";
 
 /**
- * Recta as an elizaOS plugin (elizaOS 2.x actions with `parameters`): `RECTA_FIT` and `RECTA_TRIAL_EVALUATION`.
+ * Recta as an elizaOS plugin (elizaOS 2.x actions with `parameters`): `RECTA_PREFLIGHT`, `RECTA_FIT` and
+ * `RECTA_TRIAL_EVALUATION`.
  *
  * Keyless by design: it holds no key, signs nothing and sends nothing. It asks Recta, unsigned, whether a cheaper
  * provable route exists for a cross-chain stablecoin transfer the agent would make anyway (for example with LI.FI or
