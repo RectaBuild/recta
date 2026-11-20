@@ -21,7 +21,8 @@ Recta never holds keys or funds: your agent signs and sends every transaction it
 ## Packages
 
 - [`@recta/client`](https://www.npmjs.com/package/@recta/client) ([source](packages/client)): evaluate, authorize the
-  fee, execute and report from your agent's own wallet, with local checks before every signature.
+  fee, execute and report from your agent's own wallet, with local checks before every signature. `withPreflight`
+  puts the free preflight in front of the bridge your agent already calls (LI.FI SDK, Vercel AI SDK tools).
 - [`@recta/mcp`](https://www.npmjs.com/package/@recta/mcp) ([source](packages/mcp)): a local MCP server over the client,
   so Claude, Cursor or any MCP agent runs the same flow with its own key, which stays on the machine. Execution is off
   until the operator turns it on; then each transfer is capped (`RECTA_MAX_AMOUNT`, default 1000 tokens) and goes only

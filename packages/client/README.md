@@ -56,6 +56,44 @@ your signer's address. Each step is also available alone: `evaluate`, `authorize
 An EOA signs its requests as EIP-191 signatures recovered to the sender's address. A smart account on Base signs
 through `smartAccountSigner` (see "Smart accounts").
 
+## Preflight in front of the bridge you already use
+
+`withPreflight` runs Recta Preflight, free and unsigned, before every call to the bridge your agent already makes, so
+the check happens on each transfer without the model having to remember it. It reports the route's total cost and
+arrival time, and whether Recta proves a cheaper route (for example Base → Arbitrum, 1,000 USDC: 2.39 USDC cheaper than
+LI.FI, measured on 2026-11-19). By default the bridge always runs, with the same arguments and the same result; a
+failed or slow preflight (10 s at most) never blocks it. A transfer outside Recta's corridors is not checked.
+
+LI.FI SDK:
+
+```ts
+import { executeRoute } from "@lifi/sdk";
+import { withPreflight, lifiTransfer } from "@recta/client";
+
+const execute = withPreflight(executeRoute, (route) => lifiTransfer(route), {
+  onPreflight: ({ answer }) => console.log(answer?.outcome, answer?.saving_usdc),
+  // stopOnSaving: true, // throw RectaSavingFoundError before bridging when Recta proves a saving
+});
+await execute(route);
+```
+
+A tool of the Vercel AI SDK (or any `{ execute(input) }` tool): its result gets a `recta_preflight` field, so the model
+sees the cost, the arrival and any proven saving. With `stopOnSaving`, a proven saving returns
+`{ status: "RECTA_SAVING_FOUND", recta_preflight }` instead of bridging, and the model can call the tool again with
+`skip_preflight: true` to bridge anyway.
+
+```ts
+import { withPreflightTool, transferFromChainTokens } from "@recta/client";
+
+const bridgeTool = withPreflightTool(myBridgeTool, (input) =>
+  transferFromChainTokens({ fromChainId: input.fromChainId, toChainId: input.toChainId, fromToken: input.token, toToken: input.destinationToken, fromAmount: input.amount, baseline_provider: "across" }),
+);
+```
+
+`preflight(transfer)` makes one check directly; `transferFromChainTokens` and `lifiTransfer` turn chain ids, token
+addresses and atomic amounts into Recta's network and asset keys. Requests carry `recta-client/<version> (preflight)`
+and nothing else about you. 3 free checks a day per IP address.
+
 ## Which route to declare
 
 `baseline_provider` is the route your agent would use without Recta. Declare the one it really uses: the saving and
