@@ -43,12 +43,13 @@ jobs:
           FIRST_PUBLISH_TOKEN: ${{ secrets.NPM_FIRST_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -n "${FIRST_PUBLISH_TOKEN}" ] && npm view "$(node -p "require('./package.json').name")" name >/dev/null 2>&1; then
+            # The token is only for a package's first release. Once the package exists it is ignored (the npm token
+            # behind it is revoked) and the trusted publisher's OIDC identity is the only credential.
+            echo "::warning::The package already exists: ignoring NPM_FIRST_PUBLISH_TOKEN (delete the secret when convenient)"
+            FIRST_PUBLISH_TOKEN=""
+          fi
           if [ -n "${FIRST_PUBLISH_TOKEN}" ]; then
-            # The token is only for a package's first release: once it exists, refuse to keep using it.
-            if npm view "$(node -p "require('./package.json').name")" name >/dev/null 2>&1; then
-              echo "The package already exists: delete NPM_FIRST_PUBLISH_TOKEN and use the trusted publisher"
-              exit 1
-            fi
             echo "First publish: using the temporary token (delete it after this release)"
             printf '//registry.npmjs.org/:_authToken=%s\n' "${FIRST_PUBLISH_TOKEN}" > "${RUNNER_TEMP}/.npmrc"
             export NPM_CONFIG_USERCONFIG="${RUNNER_TEMP}/.npmrc"
