@@ -4,7 +4,7 @@ import { networkChainIds } from "./index.js";
 import { rectaTools, type RectaTool, type RectaToolkitOptions } from "./tools.js";
 
 /**
- * Recta as a Coinbase AgentKit action provider: `recta_fit`, `recta_trial_evaluation`, `recta_evaluate`,
+ * Recta as a Coinbase AgentKit action provider: `recta_preflight`, `recta_fit`, `recta_trial_evaluation`, `recta_evaluate`,
  * `recta_preview`, `recta_report` and `recta_ledger`, signed with the agent's own AgentKit EVM wallet provider.
  *
  * It never sends (Fable A-1 on recta #9): AgentKit's wallet providers drop the gas limit and fee caps of a transaction
@@ -28,7 +28,7 @@ export interface AgentKitEvmWalletLike {
   };
 }
 
-const AGENTKIT_TOOLS: ReadonlySet<string> = new Set(["recta_fit", "recta_trial_evaluation", "recta_evaluate", "recta_preview", "recta_report", "recta_ledger", "recta_fee_funds"]);
+const AGENTKIT_TOOLS: ReadonlySet<string> = new Set(["recta_preflight", "recta_fit", "recta_trial_evaluation", "recta_evaluate", "recta_preview", "recta_report", "recta_ledger", "recta_fee_funds"]);
 
 /** A RectaSigner from an AgentKit EVM wallet provider: it signs requests and permits, and never sends. */
 export function agentKitSigner(wallet: AgentKitEvmWalletLike): RectaSigner {

@@ -27,10 +27,10 @@ test("configFromEnv: no key is allowed and turns execution off; a malformed key 
   assert.equal(configFromEnv({ RECTA_PRIVATE_KEY: `0x${"11".repeat(32)}`, RECTA_ALLOW_EXECUTE: "yes" }).allowExecute, true);
 });
 
-test("keyless: tools/list offers only recta_fit and recta_trial_evaluation", async () => {
+test("keyless: tools/list offers only recta_preflight, recta_fit and recta_trial_evaluation", async () => {
   const { server } = keyless(undefined);
   const r = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
-  assert.deepEqual(r.result.tools.map((t) => t.name).sort(), ["recta_fit", "recta_trial_evaluation"]);
+  assert.deepEqual(r.result.tools.map((t) => t.name).sort(), ["recta_fit", "recta_preflight", "recta_trial_evaluation"]);
   const init = await server.handle({ jsonrpc: "2.0", id: 2, method: "initialize", params: {} });
   assert.match(init.result.instructions, /without a key/);
 });

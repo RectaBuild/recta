@@ -42,11 +42,11 @@ jobs:
           free=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"recta_ledger","arguments":{}}}' | node dist/cli.js)
           echo "$free"
           names=$(echo "$free" | head -1 | grep -o '"name":"recta_[a-z_]*"' | sort | tr '\n' ' ')
-          [ "$names" = '"name":"recta_fit" "name":"recta_trial_evaluation" ' ] || { echo "keyless tools/list is not exactly fit + trial: $names"; exit 1; }
+          [ "$names" = '"name":"recta_fit" "name":"recta_preflight" "name":"recta_trial_evaluation" ' ] || { echo "keyless tools/list is not exactly preflight + fit + trial: $names"; exit 1; }
           echo "$free" | tail -1 | grep -q 'no_key' || { echo "a signing tool was not refused without a key"; exit 1; }
       - name: AgentKit, GOAT, MetaMask and elizaOS adapters
         working-directory: packages/mcp
-        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs test/smart-account.test.mjs test/metamask.test.mjs test/elizaos.test.mjs test/transfer-limits.test.mjs test/execute-back-to-back.test.mjs
+        run: node --test test/toolkits.test.mjs test/fee-funds.test.mjs test/keyless.test.mjs test/smart-account.test.mjs test/metamask.test.mjs test/elizaos.test.mjs test/transfer-limits.test.mjs test/execute-back-to-back.test.mjs test/preflight.test.mjs
       - name: The elizaOS plugin is an elizaOS 2.x Plugin
         working-directory: packages/mcp
         run: |
