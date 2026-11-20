@@ -1,0 +1,31 @@
+name: elizaOS plugin package CI
+
+# Run by baseline.yml ("Baseline checks") on every pull request and every push to main.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/plugin-recta
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Build against the published @recta/mcp it names
+        run: |
+          set -euo pipefail
+          npm install --no-save --no-package-lock --ignore-scripts "@recta/mcp@$(node -p "require('./package.json').dependencies['@recta/mcp']")" typescript@5.9.3 @types/node@22.20.2 zod@3.25.76 @elizaos/core@2.0.5
+          npx tsc -p tsconfig.build.json
+      - name: Plugin tests (no network)
+        run: node --test test/plugin.test.mjs
+      - name: The default export is an elizaOS 2.x Plugin
+        run: npx tsc -p test/tsconfig.elizaos.json
+      - name: Package contents
+        run: npm pack --dry-run

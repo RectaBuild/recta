@@ -31,11 +31,14 @@ Recta never holds keys or funds: your agent signs and sends every transaction it
   MetaMask's agent wallet CLI (`mm recta`), a Coinbase AgentKit action provider (`@recta/mcp/agentkit`), a GOAT plugin
   (`@recta/mcp/goat`) and an elizaOS plugin (`@recta/mcp/elizaos`).
 
-Both are published to npm from this repository by GitHub Actions, with provenance (`npm audit signatures`).
+- [`@recta/plugin-recta`](https://www.npmjs.com/package/@recta/plugin-recta) ([source](packages/plugin-recta)): the
+  elizaOS registry package for `@recta/mcp/elizaos` (`RECTA_PREFLIGHT` before bridging; keyless, never signs).
+
+All are published to npm from this repository by GitHub Actions, with provenance (`npm audit signatures`).
 
 ## What is in this repository
 
-The tools an agent uses to call Recta: the two npm packages above, the Agent Skills in [`skills`](skills) and the
+The tools an agent uses to call Recta: the npm packages above, the Agent Skills in [`skills`](skills) and the
 [AGENTS.md snippet](AGENTS-snippet.md). To make the preflight a standing step of a coding agent (Claude Code, Cursor,
 Codex and others that read Agent Skills): `npx skills add RectaBuild/recta`. The server behind api.recta.build is not published here. In the official MCP
 Registry, Recta is listed as `io.github.RectaBuild/recta` (the full server and `@recta/mcp`) and
