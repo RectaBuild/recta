@@ -64,6 +64,11 @@ arrival time, and whether Recta proves a cheaper route (for example Base → Arb
 LI.FI, measured on 2026-11-19). By default the bridge always runs, with the same arguments and the same result; a
 failed or slow preflight (10 s at most) never blocks it. A transfer outside Recta's corridors is not checked.
 
+A transfer you build yourself needs `source_network`, `source_asset`, `destination_network`, `destination_asset` and
+`amount` (whole tokens; a string, a positive number or a bigint). From 0.1.11 a missing or unusable field throws
+`PreflightInputError` before any request instead of sending an incomplete body, and without `onPreflight` the first
+failed or refused preflight of each wrapped call is reported once with `console.warn` (`quiet: true` hides it).
+
 LI.FI SDK:
 
 ```ts
