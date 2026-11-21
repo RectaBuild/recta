@@ -76,7 +76,7 @@ import { executeRoute } from "@lifi/sdk";
 import { withPreflight, lifiTransfer } from "@recta/client";
 
 const execute = withPreflight(executeRoute, (route) => lifiTransfer(route), {
-  onPreflight: ({ answer }) => console.log(answer?.outcome, answer?.saving_usdc),
+  onPreflight: ({ answer }) => console.log(answer?.outcome, answer?.via_recta?.saving_usdc),
   // stopOnSaving: true, // throw RectaSavingFoundError before bridging when Recta proves a saving
 });
 await execute(route);
