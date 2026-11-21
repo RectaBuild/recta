@@ -17,9 +17,10 @@ export interface PreflightTransfer {
   /** USDC, USDT… */
   readonly source_asset: string;
   readonly destination_network: string;
-  readonly destination_asset?: string;
-  /** Whole tokens as a decimal string: "1000" with USDC is 1,000 USDC. */
-  readonly amount: string;
+  /** USDC, USDT… (required by the preflight, even when it is the source asset). */
+  readonly destination_asset: string;
+  /** Whole tokens: "1000" (or 1000) with USDC is 1,000 USDC. */
+  readonly amount: string | number | bigint;
   /** The route you would use (lifi, across, stargate_v2, cctp_v2_standard…). Absent: LI.FI, or Across where LI.FI does not apply. */
   readonly baseline_provider?: string;
   /** Your sending address, for the most exact figure. */
@@ -54,10 +55,77 @@ export interface PreflightOptions {
   readonly timeoutMs?: number;
 }
 
-/** One preflight. Network failures, timeouts and non-JSON replies throw; a refusal (4xx/5xx JSON) is returned as is. */
-export async function preflight(transfer: PreflightTransfer, options: PreflightOptions = {}): Promise<PreflightAnswer> {
+const REQUIRED_FIELDS = ["source_network", "source_asset", "destination_network", "destination_asset", "amount"] as const;
+const FIELD_ALIASES: Readonly<Record<string, string>> = {
+  sourceNetwork: "source_network",
+  sourceAsset: "source_asset",
+  destinationNetwork: "destination_network",
+  destinationAsset: "destination_asset",
+  baselineProvider: "baseline_provider",
+};
+
+/** Thrown by `preflight` before any request when the transfer lacks a needed field or holds a value it cannot send as given. */
+export class PreflightInputError extends Error {
+  constructor(
+    readonly missing: readonly string[],
+    readonly invalid: readonly string[] = [],
+  ) {
+    const parts = [
+      ...(missing.length > 0 ? [`needs ${missing.join(", ")}`] : []),
+      ...(invalid.length > 0 ? [`cannot send ${invalid.join("; ")}`] : []),
+    ];
+    super(
+      `Recta Preflight ${parts.join(" and ")}. Pass { source_network: "base", source_asset: "USDC", destination_network: "arbitrum", destination_asset: "USDC", amount: "1000" } ` +
+        `(whole tokens; a positive number or bigint is accepted), or build it with lifiTransfer() / transferFromChainTokens().`,
+    );
+    this.name = "PreflightInputError";
+  }
+}
+
+/** A value as the preflight reads it, or a reason it cannot be sent as given. Nothing is ever filled in or guessed. */
+function wireValue(key: string, v: unknown): { readonly value?: string; readonly invalid?: string } {
+  if (v === undefined || v === null) return {};
+  if (typeof v === "string") return v.trim() === "" ? {} : { value: v.trim() };
+  if (typeof v === "bigint") return v > 0n ? { value: v.toString() } : { invalid: `${key} = ${v.toString()} (must be positive)` };
+  if (typeof v === "number") {
+    // String(n) is the shortest decimal that is exactly this number; an exponent form (1e21, 1e-7) is not a plain decimal.
+    const text = String(v);
+    if (!Number.isFinite(v) || v <= 0) return { invalid: `${key} = ${text} (must be a positive finite number)` };
+    if (/e/i.test(text)) return { invalid: `${key} = ${text} (pass it as a decimal string)` };
+    if (key === "amount" && Number.isInteger(v) && !Number.isSafeInteger(v)) return { invalid: `${key} = ${text} (beyond exact number precision: pass a string or bigint)` };
+    return { value: text };
+  }
+  return { invalid: `${key} (a ${typeof v}, not a string or number)` };
+}
+
+/**
+ * What one transfer becomes on the wire: strings as given (trimmed), positive finite numbers and bigints as their exact
+ * decimal text (amount: 1000 → "1000"), camelCase names under Recta's (sourceNetwork → source_network). `missing` and
+ * `invalid` say what keeps it from being sent; no value is ever replaced by a default or an example.
+ */
+export function preflightBody(transfer: PreflightTransfer | Readonly<Record<string, unknown>>): { readonly body: Record<string, string>; readonly missing: readonly string[]; readonly invalid: readonly string[] } {
   const body: Record<string, string> = {};
-  for (const [k, v] of Object.entries(transfer)) if (typeof v === "string" && v !== "") body[k] = v;
+  const invalid: string[] = [];
+  for (const [k, v] of Object.entries(transfer)) {
+    const key = FIELD_ALIASES[k] ?? k;
+    const read = wireValue(key, v);
+    if (read.invalid !== undefined) invalid.push(read.invalid);
+    if (read.value === undefined) continue;
+    if (body[key] !== undefined && body[key] !== read.value) invalid.push(`${key} given twice with different values (${body[key]}, ${read.value})`);
+    else body[key] = read.value;
+  }
+  const missing = REQUIRED_FIELDS.filter((k) => body[k] === undefined && !invalid.some((i) => i.startsWith(`${k} `)));
+  return { body, missing, invalid };
+}
+
+/**
+ * One preflight. A transfer without the fields the preflight needs, or with a value it cannot send as given, throws
+ * PreflightInputError before any request; network failures, timeouts and non-JSON replies throw; a refusal
+ * (4xx/5xx JSON) is returned as is.
+ */
+export async function preflight(transfer: PreflightTransfer, options: PreflightOptions = {}): Promise<PreflightAnswer> {
+  const { body, missing, invalid } = preflightBody(transfer);
+  if (missing.length > 0 || invalid.length > 0) throw new PreflightInputError(missing, invalid);
   const f = options.fetch ?? fetch;
   const response = await f(`${RECTA_ORIGIN}${PREFLIGHT_PATH}`, {
     method: "POST",
@@ -196,17 +264,29 @@ export interface WithPreflightOptions extends PreflightOptions {
    * RectaSavingFoundError before the bridge is called, so the agent can choose Recta's route.
    */
   readonly stopOnSaving?: boolean;
+  /** Without onPreflight, the first refused or failed preflight is reported once with console.warn; true hides it. */
+  readonly quiet?: boolean;
+}
+
+type WarnState = { warned: boolean };
+/** Without onPreflight a refused or failed preflight would go unseen: say so once per wrapped call, on the console. */
+function warnOnce(options: WithPreflightOptions, state: WarnState, problem: string): void {
+  if (options.onPreflight !== undefined || options.quiet === true || state.warned) return;
+  state.warned = true;
+  console.warn(`[@recta/client] Recta Preflight did not run: ${problem} The bridge still ran. Pass onPreflight to see every answer, or quiet: true to hide this.`);
 }
 
 /** The preflight for one call, or undefined; never throws (a failed preflight never blocks the bridge). */
-async function check(transfer: PreflightTransfer | undefined, options: WithPreflightOptions): Promise<PreflightAnswer | undefined> {
+async function check(transfer: PreflightTransfer | undefined, options: WithPreflightOptions, state: WarnState): Promise<PreflightAnswer | undefined> {
   if (transfer === undefined) return undefined;
   try {
     const answer = await preflight(transfer, options);
     options.onPreflight?.({ transfer, answer });
+    if (answer.outcome === undefined && answer.http_status >= 400) warnOnce(options, state, `HTTP ${answer.http_status}${typeof answer["reason_code"] === "string" ? ` ${answer["reason_code"]}` : ""}${typeof answer.message === "string" ? `: ${answer.message}` : "."}`);
     return answer;
   } catch (error) {
     options.onPreflight?.({ transfer, error });
+    warnOnce(options, state, error instanceof Error ? error.message : String(error));
     return undefined;
   }
 }
@@ -219,8 +299,9 @@ async function check(transfer: PreflightTransfer | undefined, options: WithPrefl
  *   const executeRoute = withPreflight(lifi.executeRoute, (route) => lifiTransfer(route));
  */
 export function withPreflight<A extends unknown[], R>(bridge: (...args: A) => Promise<R>, toTransfer: (...args: A) => PreflightTransfer | undefined, options: WithPreflightOptions = {}): (...args: A) => Promise<R> {
+  const state: WarnState = { warned: false };
   return async (...args: A) => {
-    const answer = await check(toTransfer(...args), options);
+    const answer = await check(toTransfer(...args), options, state);
     if (options.stopOnSaving === true && answer?.outcome === "SAVING_FOUND") throw new RectaSavingFoundError(answer);
     return bridge(...args);
   };
@@ -248,10 +329,11 @@ export function preflightSummary(answer: PreflightAnswer): Record<string, unknow
 export function withPreflightTool<T extends { execute?: (input: never, ...rest: never[]) => unknown }>(tool: T, toTransfer: (input: Parameters<NonNullable<T["execute"]>>[0]) => PreflightTransfer | undefined, options: WithPreflightOptions = {}): T {
   const execute = tool.execute as ((input: unknown, ...rest: unknown[]) => unknown) | undefined;
   if (execute === undefined) return tool;
+  const state: WarnState = { warned: false };
   const wrapped = async (input: unknown, ...rest: unknown[]) => {
     const skip = typeof input === "object" && input !== null && (input as Record<string, unknown>)["skip_preflight"] === true;
     const clean = skip ? Object.fromEntries(Object.entries(input as Record<string, unknown>).filter(([k]) => k !== "skip_preflight")) : input;
-    const answer = skip ? undefined : await check(toTransfer(clean as never), options);
+    const answer = skip ? undefined : await check(toTransfer(clean as never), options, state);
     if (answer !== undefined && options.stopOnSaving === true && answer.outcome === "SAVING_FOUND") {
       return { status: "RECTA_SAVING_FOUND", recta_preflight: preflightSummary(answer), note: "Recta proved a cheaper route; the bridge was not called. Sign recta_preflight.execute_via_recta.body_to_sign to get it, or call this tool again with skip_preflight: true to bridge anyway." };
     }
